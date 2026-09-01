@@ -92,15 +92,65 @@ describe('light palette role contrast (UI-NFR-002)', () => {
   });
 });
 
-describe('info contrast in the other two themes', () => {
-  it('clears 4.5:1 on filled surfaces in the dark theme', () => {
-    const { info } = darkTheme.palette;
-    expect(getContrastRatio(info.contrastText, info.main)).toBeGreaterThanOrEqual(
+describe('dark palette role contrast (UI-NFR-002, #1337)', () => {
+  const { palette } = darkTheme;
+
+  /**
+   * The dark theme is swept across every role rather than only the one that was
+   * reported. `error` at `#ef5350` was the sole failure — `warning`, `success`,
+   * `primary` and `secondary` sit far enough from white that MUI picks black and
+   * they clear the bar by 8.9-10.8. That is a measurement, and this sweep is what
+   * keeps it one instead of an assumption.
+   *
+   * Three directions, because a dark role can fail any of them independently and
+   * each candidate repair for `error` failed a different one (see `palette.ts`).
+   */
+  describe.each([
+    ['info', palette.info],
+    ['warning', palette.warning],
+    ['error', palette.error],
+    ['success', palette.success],
+    ['primary', palette.primary],
+    ['secondary', palette.secondary],
+  ] as const)('%s', (_role, color) => {
+    it('carries legible text on its filled surface', () => {
+      expect(getContrastRatio(color.contrastText, color.main)).toBeGreaterThanOrEqual(
+        AA_NORMAL_TEXT,
+      );
+    });
+
+    it('keeps the contained-button hover surface legible', () => {
+      // MUI swaps to `.dark` on hover and keeps `contrastText`. This is the
+      // direction that refuted `error: { contrastText: '#000000' }` — the repair
+      // #1337 proposed — at 3.31:1, while its resting state passed at 6.02.
+      expect(getContrastRatio(color.contrastText, color.dark)).toBeGreaterThanOrEqual(
+        AA_NORMAL_TEXT,
+      );
+    });
+
+    it('is legible as a label on the dark page background', () => {
+      // Outlined/`text` variants paint their own label in `main` on
+      // `background.default`. This is the direction that refuted darkening
+      // `error.main` to `#c62828`, at 3.34:1.
+      expect(
+        getContrastRatio(color.main, palette.background.default),
+      ).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+    });
+  });
+
+  it('draws a filled error Alert legibly without a MuiAlert override', () => {
+    // Same second path as light `info`: a filled Alert derives its label from
+    // `getContrastText(main)` rather than reading `contrastText`, so a fix to
+    // `contrastText` alone would leave the Alert failing (measured in #1289).
+    const alertLabel = palette.getContrastText(palette.error.main);
+    expect(getContrastRatio(alertLabel, palette.error.main)).toBeGreaterThanOrEqual(
       AA_NORMAL_TEXT,
     );
   });
+});
 
-  it('clears 4.5:1 on filled surfaces in the high-contrast theme', () => {
+describe('info contrast in the high-contrast theme', () => {
+  it('clears 4.5:1 on filled surfaces', () => {
     const { info } = highContrastTheme.palette;
     expect(getContrastRatio(info.contrastText, info.main)).toBeGreaterThanOrEqual(
       AA_NORMAL_TEXT,

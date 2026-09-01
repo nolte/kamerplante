@@ -177,11 +177,52 @@ Diese Werte stammen aus `src/frontend/src/theme/palette.ts` und sind verbindlich
 | Secondary Light | `#d1d9ff` | 209, 217, 255 | Sekundaere Highlights |
 | Secondary Dark | `#6f79a8` | 111, 121, 168 | Sekundaere Kontraste |
 | Secondary Contrast | `#000000` | 0, 0, 0 | Text auf Secondary-Flaechen |
-| **Error** | `#ef5350` | 239, 83, 80 | Fehler |
+| **Error** | `#ff8a80` | 255, 138, 128 | Fehler — siehe Hinweis unten |
 | **Warning** | `#ffa726` | 255, 167, 38 | Hinweise |
 | **Success** | `#66bb6a` | 102, 187, 106 | Erfolg (= Primary) |
 | **Background** | `#121212` | 18, 18, 18 | Seitenhintergrund |
 | **Paper** | `#1e1e1e` | 30, 30, 30 | Karten, Dialoge |
+
+> **Hinweis zu Error im Dark Mode (Issue #1337): Farbe aufgehellt, nicht Schrift umgestellt.**
+>
+> `darkPalette.error` stand auf `#ef5350` ohne eigenes `contrastText`. Weiss
+> darauf misst **3.49:1** — MUIs `contrastThreshold` ist 3, `#ef5350` erfuellt
+> diese Schwelle knapp, MUI waehlt daher Weiss, und jede gefuellte Error-Flaeche
+> (Chip, Button, Alert) lag unter den 4.5:1 fuer normalen Text (UI-NFR-002).
+>
+> **`error` war die einzige betroffene Dunkel-Rolle.** Gemessen, nicht
+> angenommen: `warning` (`#ffa726`), `success` (`#66bb6a`), `primary` und
+> `secondary` liegen weit genug von Weiss entfernt, dass MUI Schwarz waehlt, und
+> erreichen 8,9-10,8:1. Der reflexhafte Geschwister-Sweep war hier unnoetig.
+>
+> Eine Dunkel-Rolle muss in **drei** Richtungen bestehen, und jeder naheliegende
+> Kandidat scheitert an einer anderen:
+>
+> | Kandidat | Fuellung | Hover (`.dark`) | Schrift auf `#121212` |
+> |---|---|---|---|
+> | `#ef5350` (vorher) | **3.49** | 6.36 | 5.38 |
+> | `contrastText: '#000000'` | 6.02 | **3.31** | — |
+> | `#c62828` (abgedunkelt) | 5.61 | 9.29 | **3.34** |
+> | `#e57373` (MUI red 300) | 7.04 | **3.76** | 6.29 |
+> | **`#ff8a80` (MUI red A100)** | **9.20** | **4.72** | **8.21** |
+>
+> Der in #1337 vorgeschlagene Weg — `contrastText: '#000000'`, also die Loesung
+> von #1289 fuer helles Warning — ist damit **widerlegt**: MUI tauscht die
+> Flaeche des gefuellten Buttons im Hover gegen `error.dark` und behaelt die
+> Schrift, und Schwarz auf diesem dunkleren Rot misst 3.31:1. Abdunkeln von
+> `main` scheitert an der Gegenrichtung, in der ein `outlined`-Chip seine Schrift
+> in `main` auf den `#121212`-Seitenhintergrund zeichnet.
+>
+> Eine dunkle Palette will einen **helleren** Akzent — deshalb ist `#ff8a80`
+> (MUIs `red.A100`, ein Token der bestehenden Rampe, kein erfundener Hex) zugleich
+> die konventionelle und die einzig bestehende Antwort.
+>
+> Die Hover-Reserve ist mit 4.72:1 knapp, weil MUI `dark` aus `main` ableitet.
+> Deshalb pinnt `src/frontend/src/test/theme/paletteContrast.test.ts` alle drei
+> Richtungen fuer **jede** Dunkel-Rolle: eine Aenderung an dieser Ableitung kann
+> nicht mehr still durchgehen. Der Test ist auch die einzige Instanz, die
+> Buttons ueberhaupt sieht — axe-core meldet MUI-Buttons unter `color-contrast`
+> als `incomplete`, weil die TouchRipple-Span das Label ueberlagert.
 
 ### 2.2 Phasenfarben (Pflanzenlebenszyklus)
 
