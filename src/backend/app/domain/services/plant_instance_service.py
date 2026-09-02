@@ -44,6 +44,8 @@ from app.domain.services.propagation_service import PropagationService
 if TYPE_CHECKING:
     from app.domain.services.overwintering_materializer import OverwinteringMaterializer
     from app.domain.services.overwintering_profile_service import OverwinteringProfileService
+    from app.domain.services.species_service import SpeciesService
+    from app.domain.services.substrate_service import SubstrateService
 
 logger = structlog.get_logger()
 
@@ -64,6 +66,8 @@ class PlantInstanceService:
         propagation_service: PropagationService | None = None,
         overwintering_materializer: OverwinteringMaterializer | None = None,
         overwintering_service: OverwinteringProfileService | None = None,
+        substrate_service: SubstrateService | None = None,
+        species_service: SpeciesService | None = None,
     ) -> None:
         self._repo = plant_repo
         self._site_repo = site_repo
@@ -93,6 +97,12 @@ class PlantInstanceService:
         # is removed. Injected to avoid a service→service import cycle; no-op
         # when unwired (keeps the service usable in photo-less contexts).
         self._photo_cleanup = photo_cleanup
+        # #1335 — the resolvers for the caller-supplied catalogue references a plant
+        # carries. Optional, like every other collaborator here, so the service stays
+        # constructible in pure-domain contexts; the production wiring supplies both
+        # and an absence check pins that, so the escape cannot become the default.
+        self._substrate_service = substrate_service
+        self._species_service = species_service
 
     def list_plants(self, offset: int = 0, limit: int = 50, tenant_key: str = "") -> tuple[list[PlantInstance], int]:
         return self._repo.get_all(offset, limit, tenant_key=tenant_key)
@@ -125,10 +135,132 @@ class PlantInstanceService:
             raise NotFoundError("Site", plant.site_key)
         verify_tenant_ownership(site, plant.tenant_key, "Site")
 
+    # ── Caller-supplied reference resolution (#1335) ──────────────────────
+
+    #: The reference fields resolved by :meth:`_resolve_references`, in check order.
+    #:
+    #: ``site_key`` is absent because :meth:`_verify_site_ownership` (#719) already
+    #: owns it, unconditionally on both paths; ``cultivar_key`` is absent because it
+    #: is resolved one layer down, by
+    #: :attr:`ArangoPlantInstanceRepository._owned_reference_fields` (#1090). Order
+    #: between fields is not decision-bearing — each answers 404 on its own — but it
+    #: is *inside* ``get_growing_medium``, where scope precedes classification.
+    _RESOLVED_REFERENCE_FIELDS: tuple[str, ...] = (
+        "location_key",
+        "slot_key",
+        "species_key",
+        "substrate_batch_key",
+        "substrate_key",
+    )
+
+    def _resolve_references(self, plant: PlantInstance, *, previous: PlantInstance | None = None) -> None:
+        """Resolve the caller-supplied foreign keys on ``plant`` before it is stored (#1335).
+
+        ``POST``/``PUT``/``PATCH /t/{slug}/plant-instances`` assign the body's keys
+        onto the row verbatim, so before this existed a caller could point a plant at
+        a substrate / location / slot / batch / species that does not exist or belongs
+        to another tenant, and the amendment gate #1332 shipped had no REST seam to
+        attach to.
+
+        **Here rather than in the router.** The router would have to repeat it in
+        three handlers and the fourth caller would not get it — the #948 shape this
+        repository keeps paying for. There is one seam per direction
+        (:meth:`create_plant` / :meth:`update_plant`), so the MCP tools, the
+        onboarding service and any future caller are covered by construction rather
+        than by remembering.
+
+        **What each key is anchored on is not uniform, and that is the difficulty:**
+
+        * ``location_key`` / ``slot_key`` carry **no usable** ``tenant_key``.
+          ``LocationCreate`` has no such field and ``create_location`` builds
+          ``Location(**body.model_dump())``, so every stored row is ``""`` — and a
+          full-replace ``PUT`` even wipes what the one-off ``v0004`` backfill wrote.
+          A guard written as ``location.tenant_key == tenant_key`` would refuse
+          *every* location: an over-rejecting guard that looks like a security fix
+          and loses the feature (#706, #927). They are anchored on the parent
+          :class:`~app.domain.models.site.Site`, a slot through its location.
+        * ``species_key`` is a hybrid catalogue — own rows, the global seeds
+          (``tenant_key == ""``) and, since #1092, an explicitly granted species. The
+          predicate used is :meth:`SpeciesService.get_species` itself, not a copy of
+          its three arms.
+        * ``substrate_batch_key`` is strictly owned, no global arm (#1195).
+        * ``substrate_key`` goes through :meth:`SubstrateService.get_growing_medium`,
+          the single predicate #1332 introduced: it resolves under the caller's scope
+          **first** and only then refuses an amendment (#1175). That order is what
+          keeps the 422 from becoming a cross-tenant existence oracle.
+
+        Every refusal is a :class:`NotFoundError` (404) except the amendment, which is
+        a :class:`ValidationError` (422). 422 is honest there and only there: such a
+        substrate is already visible to the caller, so the answer discloses nothing it
+        could not read from the catalogue directly.
+
+        ``previous`` makes the update half **changed-only**, for the reasons
+        :meth:`BaseArangoRepository._verify_changed_owned_references` gives (#1090
+        C-9): an untouched reference whose target was deleted since, or reclassified
+        as an amendment after the plant was potted in it, is an integrity fact and not
+        a disclosure route — re-verifying it would make the row uneditable through
+        every internal path that rewrites the full model (phase transitions, removal,
+        planting-run materialisation).
+
+        Skipped entirely for a plant with no ``tenant_key`` (seeds, migrations, light
+        mode): there is nothing to anchor against, matching the ``if tenant_key`` gate
+        on :meth:`get_plant` and :meth:`_verify_site_ownership`.
+        """
+        if not plant.tenant_key:
+            return
+        for field in self._RESOLVED_REFERENCE_FIELDS:
+            value = getattr(plant, field, None)
+            if not value:
+                continue
+            if previous is not None and value == getattr(previous, field, None):
+                continue
+            self._resolve_reference(field, value, plant.tenant_key)
+
+    def _resolve_reference(self, field: str, value: str, tenant_key: str) -> None:
+        """Resolve one reference under ``tenant_key``, or raise. No return value: the
+        resolved documents are not used, only the fact that they resolve."""
+        if field == "location_key":
+            location = self._site_repo.get_location_by_key(value)
+            if location is None:
+                raise NotFoundError("Location", value)
+            self._require_owned_site(location.site_key, tenant_key, "Location", value)
+        elif field == "slot_key":
+            slot = self._site_repo.get_slot_by_key(value)
+            location = self._site_repo.get_location_by_key(slot.location_key) if slot and slot.location_key else None
+            if slot is None or location is None:
+                raise NotFoundError("Slot", value)
+            self._require_owned_site(location.site_key, tenant_key, "Slot", value)
+        elif field == "species_key" and self._species_service is not None:
+            self._species_service.get_species(value, tenant_key=tenant_key)
+        elif field == "substrate_batch_key" and self._substrate_service is not None:
+            self._substrate_service.get_batch(value, tenant_key=tenant_key)
+        elif field == "substrate_key" and self._substrate_service is not None:
+            # ``get_growing_medium``, not ``get_substrate``: this is the medium the
+            # plant grows *in*, and a soil amendment is not one (#1175). The predicate
+            # scopes before it classifies, so a foreign amendment answers 404.
+            self._substrate_service.get_growing_medium(value, tenant_key=tenant_key)
+
+    def _require_owned_site(self, site_key: str, tenant_key: str, entity_name: str, entity_key: str) -> None:
+        """Anchor a row that carries no usable ``tenant_key`` on its parent site.
+
+        The raised :class:`NotFoundError` names the **referenced entity**, not the
+        site behind it: an absent location and a location under a foreign site must
+        answer identically, or the difference between the two messages is itself the
+        oracle the 404 exists to prevent.
+        """
+        site = self._site_repo.get_site_by_key(site_key) if site_key else None
+        if site is None or site.tenant_key != tenant_key:
+            raise NotFoundError(entity_name, entity_key)
+
     def create_plant(self, plant: PlantInstance, skip_validation: bool = False) -> PlantInstance:
         # SEC (#719): reject a foreign/unknown site_key before any write, mirroring the
         # location create path — a client must not create a plant on another tenant's site.
         self._verify_site_ownership(plant)
+        # #1335: …and every other caller-supplied foreign key with it. Before the
+        # rotation/companion engines below, deliberately: those read the slot's
+        # neighbourhood tenant-scoped, so a foreign slot yields no findings and
+        # *passes* — the reference has to be refused before it is interpreted.
+        self._resolve_references(plant)
 
         if not skip_validation and plant.slot_key:
             # Both engines read the slot's neighbourhood/history, which is
@@ -469,6 +601,11 @@ class PlantInstanceService:
         # locations. A foreign/unknown site raises NotFoundError; the write below and
         # the overwintering sync are never reached.
         self._verify_site_ownership(plant)
+        # #1335: resolve the references this update actually **re-points**. The
+        # stored copy read above is the comparison basis, so an untouched reference
+        # is never dialled — see :meth:`_resolve_references` for why changed-only is
+        # the correct semantics here and not merely the cheap one.
+        self._resolve_references(plant, previous=existing)
         updated = self._repo.update(key, plant)
         self._sync_overwintering_on_move(updated, old_site_key)
         return updated
