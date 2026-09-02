@@ -647,6 +647,9 @@
   "dashboard": {
     "manageWidgets": "Widgets verwalten",
     "coachmark": "Du kannst dein Dashboard anpassen: Widgets hinzufügen, anordnen und in der Größe ändern — über „Bearbeiten“ oder in den Einstellungen.",
+    "loading": {
+      "announcement": "Dashboard wird geladen..."
+    },
     "empty": {
       "title": "Dein Dashboard ist leer",
       "hint": "Füge Widgets aus dem Katalog hinzu, um deine Startseite zu gestalten.",

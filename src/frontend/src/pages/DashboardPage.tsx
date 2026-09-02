@@ -19,6 +19,7 @@ import DesktopWindowsIcon from '@mui/icons-material/DesktopWindows';
 import TabletIcon from '@mui/icons-material/Tablet';
 import SmartphoneIcon from '@mui/icons-material/Smartphone';
 import DashboardCustomizeIcon from '@mui/icons-material/DashboardCustomize';
+import LoadingStatus from '@/components/common/LoadingStatus';
 import PageTitle from '@/components/layout/PageTitle';
 import { kamiStateDashboardWelcome } from '@/assets/brand/illustrations';
 import DashboardReadonlyGrid from '@/components/dashboard/DashboardReadonlyGrid';
@@ -55,9 +56,12 @@ export default function DashboardPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const { layout, activeWidgets, isWidgetRenderable, persist, reset } = useDashboardLayout();
+  const { layout, activeWidgets, isWidgetRenderable, catalogLoaded, persist, reset } =
+    useDashboardLayout();
   const aggregated = useAppSelector((s) => s.dashboard.aggregated);
-  const aggregatedLoading = useAppSelector((s) => s.dashboard.loading);
+  // The *aggregate* flag, not the catalogue one. They are different requests
+  // with different durations, and the widget placeholders wait for this one.
+  const aggregatedLoading = useAppSelector((s) => s.dashboard.aggregatedLoading);
 
   const [editMode, setEditMode] = useState(false);
   const [breakpoint, setBreakpoint] = useState<Breakpoint>('lg');
@@ -67,10 +71,13 @@ export default function DashboardPage() {
   const [configTarget, setConfigTarget] = useState<DashboardWidgetInstance | null>(null);
 
   // Parallel initial load (O-001): catalog + aggregated fire independently of
-  // the globally-loaded user preferences.
+  // the globally-loaded user preferences. The catalog is availability metadata
+  // that does not change within a session, so it is fetched once and kept —
+  // re-navigating onto the dashboard must not put the cached grid back into a
+  // loading state. Same guard as DashboardSettingsTab, the other consumer.
   useEffect(() => {
-    void dispatch(fetchWidgetCatalog());
-  }, [dispatch]);
+    if (!catalogLoaded) void dispatch(fetchWidgetCatalog());
+  }, [dispatch, catalogLoaded]);
 
   const activeWidgetKeys = useMemo(() => layout.widgets.map((w) => w.widget_key), [layout.widgets]);
   useEffect(() => {
@@ -326,6 +333,51 @@ export default function DashboardPage() {
         </Box>
       ) : (
         <DashboardDataProvider value={{ payloads: aggregated, loading: aggregatedLoading }}>
+          {/*
+            Issue #1337 item 1 — the dashboard's single loading announcement.
+
+            Every other loading placeholder in this frontend pairs its `aria-busy`
+            wrapper with its own `LoadingStatus` live region (#1324/#1329). That
+            shape does not scale here: mid-load the grid stands with five
+            aggregated placeholders at once, so a region per placeholder would be
+            five concurrent polite regions all saying "loading" — worse than the
+            silence it replaces. The decision taken instead:
+
+            - **One region, owned by this page**, above the edit-mode ternary so
+              the toggle cannot remount it, and inside the provider so it and the
+              placeholders read one and the same `aggregatedLoading`.
+            - **It speaks for the aggregate**, which is what the placeholders are
+              waiting for — including on a refresh, where only the aggregate is
+              refetched and a catalogue-driven region would stay silent.
+            - **Empty, not unmounted, when settled** (`active`): a live region
+              must exist before its content changes for the change to be
+              announced, so a second load is not swallowed.
+            - **A widget finishing early changes nothing.** The aggregate is one
+              round trip for all widget keys, so the text is written once when
+              the load starts and once when it ends.
+
+            The page keeps a *second* status region above (the edit-mode
+            move/resize announcements). Two regions are deliberate here: they
+            have disjoint sources and disjoint lifetimes, and merging them into
+            one node would mean one message silently overwriting the other when
+            a layout edit and a refetch land together. What must be unique is the
+            *loading* announcer, and this is it — no widget announces its own
+            load, and no settled widget announces its empty state.
+
+            **Known gap (#1373):** two widgets fetch their own data and are not
+            represented by this flag — `weather_forecast` (bare `Skeleton`s, no
+            `aria-busy`, no announcement) and `winter_protection` (a labelled
+            `CircularProgress`, so named but not announced). Both are default
+            beginner widgets, so on a default dashboard this region goes empty
+            while their placeholders still stand. Covering them needs a way for a
+            self-fetching widget to register into the page-level signal, which is
+            a data-layer decision rather than a markup fix.
+          */}
+          <LoadingStatus
+            active={aggregatedLoading}
+            label={t('dashboard.loading.announcement')}
+            data-testid="dashboard-loading-status"
+          />
           {editMode ? (
             <Suspense fallback={<Skeleton variant="rounded" height={400} />}>
               <DashboardEditGrid

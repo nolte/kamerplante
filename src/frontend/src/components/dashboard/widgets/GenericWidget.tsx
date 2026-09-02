@@ -199,9 +199,12 @@ export default function GenericWidget({ widgetKey, editMode = false }: WidgetCom
           }}
         >
         {loading ? (
+          // Busy, but deliberately unnamed (#1337): `aria-label` on a role-less
+          // container maps to `generic`, which ARIA prohibits naming, so the name
+          // was dropped and announced nothing. The announcement for the whole
+          // dashboard is one region owned by DashboardPage, not one per widget.
           <Box
             aria-busy="true"
-            aria-label={t('common.loading')}
             data-testid={`widget-${widgetKey}-loading`}
           >
             <Skeleton variant="rounded" height={48} />
@@ -293,10 +296,15 @@ export default function GenericWidget({ widgetKey, editMode = false }: WidgetCom
                 // the widget's primary content — next to a "0 due today" count it
                 // would be redundant.
                 numbers.length === 0 && (
+                  // Plain text, not a live region (#1337). It appears when the
+                  // aggregate settles, at the same instant as every sibling
+                  // widget's empty state — five polite regions inserted in one
+                  // tick is the chatter the grid's single announcement exists to
+                  // replace, one step later in time. Nothing here *changes*; it
+                  // is the widget's resting content.
                   <Typography
                     variant="body2"
                     color="text.secondary"
-                    aria-live="polite"
                     sx={{ textAlign: 'center' }}
                     data-testid={`widget-${widgetKey}-events-empty`}
                   >
@@ -306,9 +314,11 @@ export default function GenericWidget({ widgetKey, editMode = false }: WidgetCom
               ))}
           </Box>
         ) : (
+          // The "in preparation" resting state — visible text, deliberately not
+          // a live region (#1337). See the events-empty note above: every widget
+          // without an aggregated slice reaches this branch in the same tick the
+          // aggregate resolves.
           <Box
-            role="status"
-            aria-live="polite"
             sx={{
               display: 'flex',
               flexDirection: 'column',

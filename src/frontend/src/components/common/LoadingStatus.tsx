@@ -5,6 +5,13 @@ import { useTranslation } from 'react-i18next';
 interface LoadingStatusProps {
   /** Overrides the generic "loading" wording where a region-specific one exists. */
   label?: string;
+  /**
+   * Whether the region currently has something to say. `false` keeps the node
+   * mounted but empties and un-names it — see property 4 below. Defaults to
+   * `true`, which is the "mounted only while loading" usage of every existing
+   * call site.
+   */
+  active?: boolean;
   'data-testid'?: string;
 }
 
@@ -42,11 +49,23 @@ interface LoadingStatusProps {
  *    gives the region a name for a user who navigates onto it; the content is
  *    what makes it announce. Removing either one silently loses half the fix.
  *
+ * 4. **`active={false}` empties the region instead of unmounting it** (#1337).
+ *    Most callers render this node only while their placeholder stands, which is
+ *    fine when the placeholder is *replaced* by content — the insertion and the
+ *    content arrive together and nothing needs to be re-announced. A caller that
+ *    loads repeatedly (the dashboard refetches its aggregate on every layout
+ *    change) needs the opposite: a live region has to exist *before* its content
+ *    changes for the change to be announced, so it stays mounted and goes empty.
+ *    Empty **and unnamed** — `status` takes its name from the author, and a name
+ *    left in place would describe a load that is over to anyone who navigates
+ *    onto the region.
+ *
  * Matches the live-region convention already used in `ConfirmDialog`,
  * `RecognitionStatusCard` and `LocationAssignmentSection`.
  */
 export default function LoadingStatus({
   label,
+  active = true,
   'data-testid': testId,
 }: LoadingStatusProps) {
   const { t } = useTranslation();
@@ -56,11 +75,11 @@ export default function LoadingStatus({
       component="span"
       role="status"
       aria-live="polite"
-      aria-label={message}
+      aria-label={active ? message : undefined}
       sx={visuallyHidden}
       data-testid={testId}
     >
-      {message}
+      {active ? message : ''}
     </Box>
   );
 }

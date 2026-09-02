@@ -304,9 +304,10 @@ export default function PlantGridWidget({ widgetKey, editMode = false }: WidgetC
         {/* Body */}
         <Box sx={{ flexGrow: 1, minHeight: 0 }}>
           {loading ? (
+            // Busy, but deliberately unnamed — see GenericWidget / #1337. The
+            // dashboard's single loading announcement is owned by DashboardPage.
             <Box
               aria-busy="true"
-              aria-label={t('common.loading')}
               data-testid={`widget-${widgetKey}-loading`}
               sx={{ display: 'grid', gap: 1, gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))' }}
             >
@@ -315,17 +316,23 @@ export default function PlantGridWidget({ widgetKey, editMode = false }: WidgetC
               <Skeleton variant="rounded" height={72} />
             </Box>
           ) : plants.length === 0 ? (
+            // Resting content, not an announcement (#1337): this appears the
+            // moment the aggregate resolves, alongside every sibling widget's
+            // empty state. The grid's single loading region has already spoken
+            // for that transition.
             <Typography
               variant="body2"
               color="text.secondary"
-              role="status"
-              aria-live="polite"
               sx={{ textAlign: 'center', py: 3 }}
               data-testid={`widget-${widgetKey}-empty`}
             >
               {t('dashboard.plantGrid.empty')}
             </Typography>
           ) : filtered.length === 0 ? (
+            // This one *stays* a live region, and the difference is the trigger:
+            // it is the result of the user changing a filter, not of data
+            // arriving, so there is a user action for it to answer and it cannot
+            // coincide with the other widgets settling.
             <Typography
               variant="body2"
               color="text.secondary"
