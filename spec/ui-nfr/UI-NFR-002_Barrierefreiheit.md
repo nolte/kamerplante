@@ -190,8 +190,9 @@ schließen die Lücke generisch für alle solchen Oberflächen.
     - [x] Alle Bilder haben `alt`-Texte — **vitest-axe** (`image-alt`-Regel, `critical`)
     - [ ] ARIA-Landmarks auf jeder Seite — **nicht durchgesetzt**: die Landmark-Regeln melden an isoliert gerenderten Komponenten Falschbefunde und liegen unterhalb der `critical`-Schwelle
     - [ ] Dynamische Aenderungen ueber Live-Regions — **nicht durchgesetzt**, statisch nicht pruefbar
-- [ ] **Kontraste** — **nicht durchgesetzt**
-    - [ ] 4.5:1 fuer alle Texte — jsdom rechnet keine Farben; Lighthouse prueft es, ist aber advisory und sieht nur die unauthentifizierte Huelle
+- [ ] **Kontraste** — **teilweise durchgesetzt**
+    - [x] 4.5:1 fuer die Paletten-Rollen (`contrastText` auf `main`, auf `dark`, und `main` auf `background.default`, beide Themes) — `src/frontend/src/test/theme/paletteContrast.test.ts`, required Check `lint-test-build (22)`; das ist auch die einzige Instanz, die MUI-Buttons ueberhaupt misst (axe meldet sie wegen des TouchRipple-Overlays als `incomplete`)
+    - [ ] 4.5:1 fuer komponierte Seiten (Text auf beliebigen Flaechen) — jsdom rechnet keine Farben; Lighthouse prueft es, ist aber advisory und sieht nur die unauthentifizierte Huelle
     - [ ] Keine Information nur ueber Farbe — kein automatisierter Test moeglich, keine Review-Checkliste
 - [ ] **Schriftgrößen** — **nicht durchgesetzt**
     - [ ] 200% Zoom nutzbar — kein Test
