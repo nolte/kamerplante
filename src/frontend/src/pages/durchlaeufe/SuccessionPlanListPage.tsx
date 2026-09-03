@@ -404,6 +404,10 @@ export default function SuccessionPlanListPage() {
                     <ListItemAvatar>
                       <Avatar
                         sx={{ width: 32, height: 32, fontSize: '0.8rem', bgcolor: 'primary.main' }}
+                        // The label carries "of N", which no visible text
+                        // repeats, so it must survive: a role that accepts a
+                        // name, not a role-less div that drops it (#1337).
+                        role="img"
                         aria-label={t('pages.successionPlans.runSequenceLabel', {
                           name: run.name,
                           index: run.succession_sequence,

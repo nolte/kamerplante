@@ -161,40 +161,45 @@ export const darkPalette: PaletteOptions = {
   },
   // #1337 — `#ef5350` let MUI pick white (3.49:1 against it, contrastThreshold
   // is 3), so every filled error Chip, Button and Alert was under WCAG 2.2 AA's
-  // 4.5:1 for normal text (UI-NFR-002). `error` was the only dark role affected:
-  // `warning`, `success`, `primary` and `secondary` sit far enough from white
-  // that MUI picks black and they clear the bar by 8.9-10.8. Measured, not
-  // assumed — the reflexive sibling sweep is unnecessary here.
+  // 4.5:1 for normal text (UI-NFR-002).
   //
-  // Three repairs were measured and two are refused, because a dark role has to
-  // clear the bar in THREE directions and each candidate fails a different one:
+  // A dark role has to clear the bar on three surfaces, each a different
+  // expression: `contrastText` on `main` (filled Chip / contained Button),
+  // `contrastText` on `dark` (a contained Button's hover surface — and, in dark
+  // mode, a filled Alert, which MUI paints on `.dark`), and `main` on the page
+  // and paper backgrounds (outlined / text label).
   //
-  //   candidate            filled   hover   label on #121212
-  //   #ef5350 (before)     3.49     6.36    5.38
-  //   contrastText #000    6.02     3.31    —     ← what #1337 proposed
-  //   #c62828 (darker)     5.61     9.29    3.34
-  //   #e57373 (red 300)    7.04     3.76    6.29
-  //   #ff8a80 (red A100)   9.20     4.72    8.21   ← the only one that passes
+  // The first pass of this fix measured those with MUI's `getContrastRatio`,
+  // which ignores alpha. MUI's derived `contrastText` for a light `main` is
+  // `rgba(0,0,0,0.87)`, and composited over the derived `error.dark`
+  // (rgb 178,96,89) it paints at 4.29:1 — not the 4.72 pure black would give.
+  // `success` had the same shape on its derived `.dark` (4.15). So these roles
+  // declare what they paint instead of leaving it to a derivation: pure black
+  // text, and for `error` and `success` an explicit `dark` from the same MUI
+  // ramp with real margin. `paletteContrast.test.ts` composites alpha before
+  // measuring, so a derived rgba cannot pass again.
   //
-  // `contrastText: '#000000'` — the repair #1289 used for light `warning` — is
-  // the trap: MUI swaps a contained Button's surface to `error.dark` on hover
-  // while keeping the label, and black on that darker red is 3.31. Darkening
-  // `main` instead fails the other direction, where an outlined chip paints its
-  // label in `main` on the `#121212` page.
+  //   role      main      dark       filled   hover / filled Alert   label on #121212
+  //   error     #ff8a80   #e57373    9.20     6.99                   8.21
+  //   warning   #ffa726   derived    10.81    5.35                   9.6
+  //   success   #66bb6a   #4caf50    8.88     7.56                   8.0
   //
-  // A dark theme wants a LIGHTER accent, which is why `#ff8a80` (MUI red A100)
-  // is both the conventional and the only passing answer. Its hover margin is
-  // thin (4.72 against 4.5) because MUI derives `dark` by darkening `main`;
-  // `paletteContrast.test.ts` pins all three directions so a change to that
-  // derivation cannot pass silently.
+  // `#ef5350` stays refused (white on it 3.49; black on it passes at rest but
+  // fails its derived hover at 3.31), and darkening `main` to `#c62828` fails
+  // the label direction at 3.34. A dark theme wants a lighter accent.
   error: {
     main: '#ff8a80',
+    dark: '#e57373',
+    contrastText: '#000000',
   },
   warning: {
     main: '#ffa726',
+    contrastText: '#000000',
   },
   success: {
     main: '#66bb6a',
+    dark: '#4caf50',
+    contrastText: '#000000',
   },
   background: {
     default: '#121212',

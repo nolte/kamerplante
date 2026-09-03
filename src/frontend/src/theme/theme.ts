@@ -49,16 +49,25 @@ function buildTheme(mode: 'light' | 'dark'): Theme {
           // `MuiChip` override survived only because it was already written this
           // way. The `text` variant is covered too: it has the same defect and
           // two live call sites (the AccountSettings reset dialogs).
+          //
+          // Light mode only (#1337 review): in dark mode `warning.main` already
+          // reads at 8.6:1 on paper, and `warning.dark` (rgb 178,116,26) would
+          // take it down to 4.3 — the override would create the defect it
+          // exists to remove.
           root: ({ theme }) => ({
             textTransform: 'none',
             fontWeight: 600,
-            '&.MuiButton-outlined.MuiButton-colorWarning': {
-              color: theme.palette.warning.dark,
-              borderColor: theme.palette.warning.dark,
-            },
-            '&.MuiButton-text.MuiButton-colorWarning': {
-              color: theme.palette.warning.dark,
-            },
+            ...(theme.palette.mode === 'light'
+              ? {
+                  '&.MuiButton-outlined.MuiButton-colorWarning': {
+                    color: theme.palette.warning.dark,
+                    borderColor: theme.palette.warning.dark,
+                  },
+                  '&.MuiButton-text.MuiButton-colorWarning': {
+                    color: theme.palette.warning.dark,
+                  },
+                }
+              : {}),
             // A *contained* warning Button keeps `contrastText` as its label on
             // hover but swaps the background to `warning.dark` — so flipping
             // `warning.contrastText` to black (#1289) would have taken this
@@ -88,12 +97,28 @@ function buildTheme(mode: 'light' | 'dark'): Theme {
       // warning Alert both reach >= 4.5:1") would have been reported as met with
       // the Alert half untouched. Pointed at `contrastText` so the Alert follows
       // the same single decision as every other filled warning surface.
+      //
+      // In dark mode the same applies to EVERY role, for a different reason:
+      // MUI paints a dark filled Alert on `.dark` and derives the label with
+      // `getContrastText(dark)`, which picks white for `info`, `primary` and
+      // `secondary` (3.9-4.3:1) and a translucent black for the rest that
+      // composites below 4.5 on the derived `.dark` (#1337 review, measured
+      // with alpha composited). Each dark role declares a `contrastText` that
+      // clears its `.dark`, so the filled Alert reads that single decision too.
       MuiAlert: {
         styleOverrides: {
           root: ({ theme }) => ({
             '&.MuiAlert-filled.MuiAlert-colorWarning': {
               color: theme.palette.warning.contrastText,
             },
+            ...(theme.palette.mode === 'dark'
+              ? Object.fromEntries(
+                  (['error', 'info', 'success', 'primary', 'secondary'] as const).map((role) => [
+                    `&.MuiAlert-filled.MuiAlert-color${role[0].toUpperCase()}${role.slice(1)}`,
+                    { color: theme.palette[role].contrastText },
+                  ]),
+                )
+              : {}),
           }),
         },
       },
@@ -119,11 +144,16 @@ function buildTheme(mode: 'light' | 'dark'): Theme {
       // survive the next minor bump without silently becoming a no-op.
       MuiChip: {
         styleOverrides: {
+          // Light mode only — same reason as the Button override above.
           root: ({ theme }) => ({
-            '&.MuiChip-outlined.MuiChip-colorWarning': {
-              color: theme.palette.warning.dark,
-              borderColor: theme.palette.warning.dark,
-            },
+            ...(theme.palette.mode === 'light'
+              ? {
+                  '&.MuiChip-outlined.MuiChip-colorWarning': {
+                    color: theme.palette.warning.dark,
+                    borderColor: theme.palette.warning.dark,
+                  },
+                }
+              : {}),
           }),
         },
       },

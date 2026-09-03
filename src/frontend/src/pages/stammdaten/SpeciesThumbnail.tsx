@@ -100,8 +100,14 @@ function SpeciesThumbnail({
   }
 
   return (
+    // `describeChild`: without it MUI clones the tooltip text onto the Avatar
+    // root as `aria-label` — a name on a role-less div, the very shape this
+    // component just stopped producing on its fallback. Attribution is a
+    // description of the image, not its name, so `aria-describedby` is also
+    // the honest relation.
     <Tooltip
       title={tooltipText.trim()}
+      describeChild
       enterTouchDelay={0}
       leaveTouchDelay={3000}
     >
