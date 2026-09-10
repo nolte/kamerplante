@@ -53,4 +53,50 @@ describe('LoadingStatus', () => {
     render(<LoadingStatus data-testid="widget-loading-status" />);
     expect(screen.getByTestId('widget-loading-status')).toHaveAttribute('role', 'status');
   });
+
+  /**
+   * #1337 — the stay-mounted mode. A caller that loads repeatedly (the dashboard
+   * refetches its aggregate on every layout change) cannot unmount the region
+   * between loads: a live region has to exist *before* its content changes for
+   * the change to be announced.
+   */
+  describe('active={false}', () => {
+    it('stays mounted as a live region', () => {
+      render(<LoadingStatus active={false} data-testid="dashboard-loading-status" />);
+      const status = screen.getByTestId('dashboard-loading-status');
+      expect(status).toHaveAttribute('role', 'status');
+      expect(status).toHaveAttribute('aria-live', 'polite');
+      expect(status).not.toHaveAttribute('aria-hidden');
+    });
+
+    it('says nothing and is unnamed', () => {
+      // Empty *and* unnamed: content is what a live region announces, and a name
+      // left behind would describe a finished load to anyone navigating onto it.
+      render(<LoadingStatus active={false} label="Lade" data-testid="s" />);
+      const status = screen.getByTestId('s');
+      expect(status.textContent).toBe('');
+      expect(status).not.toHaveAttribute('aria-label');
+      expect(status).toHaveAccessibleName('');
+    });
+
+    it('speaks again when it is re-activated, on the same node', () => {
+      const { rerender } = render(<LoadingStatus active={false} label="Lade" data-testid="s" />);
+      const before = screen.getByTestId('s');
+
+      rerender(<LoadingStatus active label="Lade" data-testid="s" />);
+
+      const after = screen.getByTestId('s');
+      // The *same* element, not a replacement: an empty → text transition on an
+      // existing region is what gets announced; a freshly inserted region with
+      // its text already in place is not reliably announced at all.
+      expect(after).toBe(before);
+      expect(after).toHaveTextContent('Lade');
+      expect(after).toHaveAccessibleName('Lade');
+    });
+
+    it('defaults to active, so existing call sites are unchanged', () => {
+      render(<LoadingStatus label="Lade" data-testid="s" />);
+      expect(screen.getByTestId('s')).toHaveTextContent('Lade');
+    });
+  });
 });

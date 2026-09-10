@@ -647,6 +647,9 @@
   "dashboard": {
     "manageWidgets": "Manage widgets",
     "coachmark": "You can personalize your dashboard: add, arrange and resize widgets — via “Edit” or in the settings.",
+    "loading": {
+      "announcement": "Dashboard is loading..."
+    },
     "empty": {
       "title": "Your dashboard is empty",
       "hint": "Add widgets from the catalog to build your start page.",
