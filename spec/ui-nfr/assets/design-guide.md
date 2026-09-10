@@ -177,11 +177,60 @@ Diese Werte stammen aus `src/frontend/src/theme/palette.ts` und sind verbindlich
 | Secondary Light | `#d1d9ff` | 209, 217, 255 | Sekundaere Highlights |
 | Secondary Dark | `#6f79a8` | 111, 121, 168 | Sekundaere Kontraste |
 | Secondary Contrast | `#000000` | 0, 0, 0 | Text auf Secondary-Flaechen |
-| **Error** | `#ef5350` | 239, 83, 80 | Fehler |
+| **Error** | `#ff8a80` | 255, 138, 128 | Fehler — siehe Hinweis unten |
 | **Warning** | `#ffa726` | 255, 167, 38 | Hinweise |
 | **Success** | `#66bb6a` | 102, 187, 106 | Erfolg (= Primary) |
 | **Background** | `#121212` | 18, 18, 18 | Seitenhintergrund |
 | **Paper** | `#1e1e1e` | 30, 30, 30 | Karten, Dialoge |
+
+> **Hinweis zu den Dunkel-Rollen (Issue #1337): Farbe aufgehellt, Schrift und `dark` explizit deklariert.**
+>
+> `darkPalette.error` stand auf `#ef5350` ohne eigenes `contrastText`. Weiss
+> darauf misst **3.49:1** — MUIs `contrastThreshold` ist 3, `#ef5350` erfuellt
+> diese Schwelle knapp, MUI waehlt daher Weiss, und jede gefuellte Error-Flaeche
+> (Chip, Button, Alert) lag unter den 4.5:1 fuer normalen Text (UI-NFR-002).
+>
+> Eine Dunkel-Rolle muss auf **vier** Flaechen bestehen, und jede ist ein
+> anderer Ausdruck: `contrastText` auf `main` (gefuellter Chip / Button),
+> `contrastText` auf `dark` (Hover des gefuellten Buttons — und im Dunkelmodus
+> der gefuellte **Alert**, den MUI auf `.dark` malt), sowie `main` auf
+> Seiten- und Paper-Hintergrund (`outlined`-/`text`-Label).
+>
+> Der erste Anlauf dieser Reparatur hat mit MUIs `getContrastRatio` gemessen,
+> das den Alpha-Kanal ignoriert: MUIs abgeleitetes `contrastText` ist
+> `rgba(0,0,0,0.87)`, und ueber dem abgeleiteten `error.dark` (rgb 178,96,89)
+> malt der Browser **4.29:1**, nicht die 4.72, die reines Schwarz gaebe.
+> `success` hatte auf seinem abgeleiteten `.dark` dieselbe Form (4.15). Und
+> die Behauptung „nur `error` betroffen" hielt fuer den gefuellten Alert nicht:
+> `getContrastText(dark)` waehlt fuer `info`, `primary`, `secondary` Weiss
+> (3.9-4.3:1).
+>
+> Deshalb deklarieren die Rollen jetzt, was sie malen, statt es der Ableitung
+> zu ueberlassen: reines Schwarz als `contrastText`, fuer `error` und `success`
+> ein explizites `dark` aus derselben MUI-Rampe mit echter Reserve, und im
+> Dunkelmodus liest jeder gefuellte Alert `contrastText` (Override in
+> `theme.ts`, dieselbe Entscheidung wie fuer den hellen Warning-Alert aus #1289).
+>
+> | Rolle | `main` | `dark` | gefuellt | Hover / Alert | Label auf `#121212` |
+> |---|---|---|---|---|---|
+> | `error` | `#ff8a80` | `#e57373` | 9.20 | 6.99 | 8.21 |
+> | `warning` | `#ffa726` | abgeleitet | 10.81 | 5.35 | 9.6 |
+> | `success` | `#66bb6a` | `#4caf50` | 8.88 | 7.56 | 8.0 |
+>
+> Verworfen bleiben `#ef5350` (Weiss 3.49; Schwarz besteht in Ruhe, faellt im
+> abgeleiteten Hover auf 3.31) und ein abgedunkeltes `main` wie `#c62828`
+> (Label-Richtung 3.34). Eine dunkle Palette will einen **helleren** Akzent.
+>
+> Die Warning-Overrides fuer `outlined`/`text` in `theme.ts` gelten nur im
+> hellen Theme: im Dunkelmodus liest `warning.main` auf Paper bei 8.6:1, und
+> `warning.dark` haette es auf 4.3 gedrueckt.
+>
+> `src/frontend/src/test/theme/paletteContrast.test.ts` komponiert Alpha vor
+> jeder Messung und pinnt fuer **jede** Dunkel-Rolle alle vier Flaechen plus
+> den Alert-Override; eine Aenderung an MUIs Ableitung kann nicht mehr still
+> durchgehen. Der Test ist auch die einzige Instanz, die Buttons ueberhaupt
+> sieht — axe-core meldet MUI-Buttons unter `color-contrast` als `incomplete`,
+> weil die TouchRipple-Span das Label ueberlagert.
 
 ### 2.2 Phasenfarben (Pflanzenlebenszyklus)
 

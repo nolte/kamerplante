@@ -159,14 +159,47 @@ export const darkPalette: PaletteOptions = {
     dark: '#6f79a8',
     contrastText: '#000000',
   },
+  // #1337 — `#ef5350` let MUI pick white (3.49:1 against it, contrastThreshold
+  // is 3), so every filled error Chip, Button and Alert was under WCAG 2.2 AA's
+  // 4.5:1 for normal text (UI-NFR-002).
+  //
+  // A dark role has to clear the bar on three surfaces, each a different
+  // expression: `contrastText` on `main` (filled Chip / contained Button),
+  // `contrastText` on `dark` (a contained Button's hover surface — and, in dark
+  // mode, a filled Alert, which MUI paints on `.dark`), and `main` on the page
+  // and paper backgrounds (outlined / text label).
+  //
+  // The first pass of this fix measured those with MUI's `getContrastRatio`,
+  // which ignores alpha. MUI's derived `contrastText` for a light `main` is
+  // `rgba(0,0,0,0.87)`, and composited over the derived `error.dark`
+  // (rgb 178,96,89) it paints at 4.29:1 — not the 4.72 pure black would give.
+  // `success` had the same shape on its derived `.dark` (4.15). So these roles
+  // declare what they paint instead of leaving it to a derivation: pure black
+  // text, and for `error` and `success` an explicit `dark` from the same MUI
+  // ramp with real margin. `paletteContrast.test.ts` composites alpha before
+  // measuring, so a derived rgba cannot pass again.
+  //
+  //   role      main      dark       filled   hover / filled Alert   label on #121212
+  //   error     #ff8a80   #e57373    9.20     6.99                   8.21
+  //   warning   #ffa726   derived    10.81    5.35                   9.6
+  //   success   #66bb6a   #4caf50    8.88     7.56                   8.0
+  //
+  // `#ef5350` stays refused (white on it 3.49; black on it passes at rest but
+  // fails its derived hover at 3.31), and darkening `main` to `#c62828` fails
+  // the label direction at 3.34. A dark theme wants a lighter accent.
   error: {
-    main: '#ef5350',
+    main: '#ff8a80',
+    dark: '#e57373',
+    contrastText: '#000000',
   },
   warning: {
     main: '#ffa726',
+    contrastText: '#000000',
   },
   success: {
     main: '#66bb6a',
+    dark: '#4caf50',
+    contrastText: '#000000',
   },
   background: {
     default: '#121212',
