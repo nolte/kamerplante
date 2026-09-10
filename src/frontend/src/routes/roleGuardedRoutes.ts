@@ -165,12 +165,14 @@ export const ACTION_GATED_ROUTES: readonly string[] = [
  *   which have no page at all;
  * - pages that call nothing (`diagnose`, `glossar`, `kiosk`, `connect`) or only
  *   open reads (the catalogues, the substrate pages, the calculators);
- * - the **platform-admin** surfaces (`admin/*`) and the DSGVO self-service
- *   (`privacy`). Those are gated on a different axis — `require_platform_admin`
- *   and per-user ownership — which `<RequireRole>` deliberately does not model
- *   (REQ-049 §2.4 keeps the axes disjoint). A route guard for the platform-admin
- *   axis is a separate gap, recorded in the #1261 pull request, not silently
- *   folded in here.
+ * - the DSGVO self-service (`privacy`), gated per-user on ownership rather than
+ *   on any role: every member reaches their *own* data and nobody else's, so
+ *   there is no rank to compare.
+ *
+ * The **platform-admin** surfaces (`admin/*`) used to sit in this bucket with the
+ * reason "different axis, recorded as a separate gap in the #1261 pull request".
+ * That gap is #1336, and they now carry their own decision in
+ * {@link PLATFORM_ADMIN_ROUTES} — still the other axis, no longer undecided.
  */
 export const UNGATED_ROUTES: readonly string[] = [
   'connect',
@@ -182,8 +184,6 @@ export const UNGATED_ROUTES: readonly string[] = [
   'password-reset/:token',
   'kiosk',
   'privacy',
-  'admin/tenants/:key',
-  'admin/users/:key',
   'tenants/create',
   'invitations/accept',
   'pflege',
@@ -215,3 +215,84 @@ export const UNGATED_ROUTES: readonly string[] = [
   'phasen/ablaeufe/:key',
   '*',
 ];
+
+/**
+ * The platform-administration route decision (#1336, REQ-049 §2.4).
+ *
+ * Same defect class as {@link ROLE_GUARDED_ROUTES}, **different axis**. The
+ * domain rank (viewer < grower < lead) and the platform-admin attribute are not
+ * a hierarchy: `require_tenant_role`/`require_permission` never consult
+ * `is_platform_admin`, and `require_platform_admin` never consults a domain
+ * role. So this is a second table read by a second wrapper, not a second column
+ * on the first — one component answering both questions would have to invent a
+ * rank that the spec deliberately does not define.
+ */
+export interface PlatformAdminRoute {
+  /** The backend operation whose gate this mirrors — the authority, verbatim. */
+  gate: string;
+}
+
+/**
+ * Routes wrapped in `<RequirePlatformAdmin>` in `AppRoutes.tsx`.
+ *
+ * ## The inventory (measured on `develop` @ 0575d1281, 2026-09-02)
+ *
+ * The survey is over the **axis**, not over the URL prefix: every frontend module
+ * that calls an `/admin/...` path was traced to the pages that import it, and each
+ * backend `/admin/**` operation read for its dependency. Five routes reach the
+ * platform-admin gate, and only two of them are whole admin pages:
+ *
+ * - `admin/tenants/:key`, `admin/users/:key` — **listed below.** Every request
+ *   these pages make is `require_platform_admin`, including the two `GET`s they
+ *   load with. A refused member has nothing to read here at all.
+ * - `settings` — the account page **every member owns**; only its *platform* and
+ *   *ha* tabs are admin surfaces. It cannot be route-guarded on this axis
+ *   without taking every member's own account settings away, so it keeps its
+ *   domain-axis decision in {@link ACTION_GATED_ROUTES}. Measuring it did
+ *   contradict the assumption this entry started from: the `platform` tab is
+ *   offered to everyone (unlike the `storage`/`weather` tabs, which are built
+ *   only when `canManageStorage`), and `AccountSettingsPage` derives its own
+ *   `isPlatformAdmin` by *probing* the three admin endpoints and catching the
+ *   403 — so a non-admin who opens `/settings#platform` still gets the tab, with
+ *   empty cards behind it. That is the same defect on the same axis at the tab
+ *   level, and it is deliberately **not** fixed here: it belongs to the page, not
+ *   to the router. Recorded in the #1336 pull request as a follow-up.
+ * - `stammdaten/species/:key` (reference-image curation) and
+ *   `pflanzenschutz/pests/:key` (the pest gallery's curation controls) — read
+ *   pages with an admin-only panel inside, already gated on `usePlatformAdmin()`
+ *   at the component. Same shape as the action-gated bucket on the other axis.
+ *
+ * ## What a refused member sees, and why it differs from #1261
+ *
+ * `<RequireRole>` restricts but never replaces, because the API leaves the reads
+ * of every domain-guarded route open (REQ-049 §2.3) and blocking would remove
+ * access the server grants. That reasoning **does not transfer here** — checked
+ * rather than assumed: `GET /admin/platform/tenants` and `GET /admin/platform/users`
+ * carry `require_platform_admin` exactly like the writes beside them. A banner
+ * over the page would sit above nothing, and today's behaviour is worse than
+ * nothing: `AdminEditTenantPage` swallows the 403 and renders
+ * `pages.admin.tenantNotFound`, telling a member the tenant does not exist when
+ * it does and they merely may not see it. So refusal renders a replacement state
+ * — what the page is, that the account lacks the right, and the way back.
+ *
+ * ## Deliberately not decided here: `admin_scope`
+ *
+ * `require_admin_scope('management')` on `tenants/settings` and
+ * `require_admin_scope('technical')` on `umgebungssteuerung` are a **third**
+ * question — additive scopes within a tenant, neither rank nor platform
+ * attribute (REQ-049 §2.4). Folding them in would put three meanings in one pass;
+ * they keep their current action-level gating and are the next pass.
+ */
+export const PLATFORM_ADMIN_ROUTES: Readonly<Record<string, PlatformAdminRoute>> = {
+  // REQ-024 — the whole page is platform administration: it loads through
+  // `GET /admin/platform/tenants`, then edits/deletes the tenant and adds,
+  // removes and re-roles its members through the same gated router.
+  'admin/tenants/:key': {
+    gate: 'GET /api/v1/admin/platform/tenants — require_platform_admin',
+  },
+  // REQ-023 — the mirror page for a user account: loaded by
+  // `GET /admin/platform/users`, with membership management beside it.
+  'admin/users/:key': {
+    gate: 'GET /api/v1/admin/platform/users — require_platform_admin',
+  },
+};

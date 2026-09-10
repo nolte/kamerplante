@@ -11,6 +11,7 @@ import PublicOnlyRoute from '@/auth/PublicOnlyRoute';
 // `src/test/routes/roleRouteGuards.test.tsx` both enforce that pairing, so the
 // guard cannot be dropped from a route without a test going red.
 import RequireRole from '@/auth/RequireRole';
+import RequirePlatformAdmin from '@/auth/RequirePlatformAdmin';
 import RouterErrorPage from '@/pages/RouterErrorPage';
 import { isLightMode } from '@/config/mode';
 
@@ -258,23 +259,32 @@ export const router = createBrowserRouter(
             />
           )}
 
-          {/* Admin: Edit tenant/user — full mode only */}
+          {/* Admin: Edit tenant/user — full mode only.
+              REQ-049 §2.4 / #1336: the platform-admin axis, guarded by its own
+              wrapper. Every request these pages make is `require_platform_admin`,
+              the reads included, so refusal replaces the page instead of
+              restricting it — the decision and its measurement are in
+              PLATFORM_ADMIN_ROUTES. */}
           {!isLightMode && (
             <>
               <Route
                 path="admin/tenants/:key"
                 element={
-                  <Suspense fallback={<LoadingSkeleton variant="form" />}>
-                    <AdminEditTenantPage />
-                  </Suspense>
+                  <RequirePlatformAdmin>
+                    <Suspense fallback={<LoadingSkeleton variant="form" />}>
+                      <AdminEditTenantPage />
+                    </Suspense>
+                  </RequirePlatformAdmin>
                 }
               />
               <Route
                 path="admin/users/:key"
                 element={
-                  <Suspense fallback={<LoadingSkeleton variant="form" />}>
-                    <AdminEditUserPage />
-                  </Suspense>
+                  <RequirePlatformAdmin>
+                    <Suspense fallback={<LoadingSkeleton variant="form" />}>
+                      <AdminEditUserPage />
+                    </Suspense>
+                  </RequirePlatformAdmin>
                 }
               />
             </>

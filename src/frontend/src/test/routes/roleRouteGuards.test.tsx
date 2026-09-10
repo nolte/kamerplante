@@ -7,6 +7,7 @@ import {
   ROLE_GUARDED_ROUTES,
   ACTION_GATED_ROUTES,
   UNGATED_ROUTES,
+  PLATFORM_ADMIN_ROUTES,
 } from '@/routes/roleGuardedRoutes';
 import RequireRole from '@/auth/RequireRole';
 import PageTitle from '@/components/layout/PageTitle';
@@ -89,6 +90,9 @@ describe('AppRoutes — role-guard placement (#1261)', () => {
     // guarded part of it.
     const decided = [
       ...Object.keys(ROLE_GUARDED_ROUTES),
+      // The second axis (#1336) is a fourth bucket of the same partition: every
+      // route carries exactly one decision, whichever question it answers.
+      ...Object.keys(PLATFORM_ADMIN_ROUTES),
       ...ACTION_GATED_ROUTES,
       ...UNGATED_ROUTES,
     ];

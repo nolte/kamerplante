@@ -163,6 +163,12 @@
     "title": "Zum Bearbeiten brauchst du die Rolle „{{role}}“",
     "description": "Du kannst diese Seite ansehen, aber die Aktion oben rechts ist für dich ausgeblendet: Anlegen und Ändern ist in diesem Mandanten ab der Rolle „{{role}}“ möglich. Frag die Leitung deines Mandanten, wenn du diese Rechte brauchst."
   },
+  "platformAdminGuard": {
+    "title": "Plattform-Administration",
+    "noticeTitle": "Dieser Bereich ist der Plattform-Administration vorbehalten",
+    "description": "Mandanten und Benutzerkonten dieser Installation verwaltet nur die Plattform-Administration. Dein Konto hat diese Berechtigung nicht — der Server beantwortet auch die Leseanfragen dieser Seite mit „403 Forbidden“, hier ist also nichts zu sehen. Wende dich an die Administration dieser Installation, wenn du diese Rechte brauchst.",
+    "backToDashboard": "Zum Dashboard"
+  },
   "storageSettings": {
     "title": "Speicher",
     "intro": "Lege fest, wo Kamerplanter Binärdaten (Fotos, Importe, Exporte) ablegt. Die Auswahl gilt für die gesamte Instanz und wirkt sofort nach dem Speichern.",
