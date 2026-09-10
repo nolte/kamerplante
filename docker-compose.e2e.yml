@@ -51,7 +51,7 @@ services:
 
   # ── TimescaleDB (optional) ─────────────────────────────────
   timescaledb:
-    image: timescale/timescaledb:2.30.0-pg16@sha256:8adb9b8d8cb56195a1bd66fafb211e57dbc5ea44c0972b7be4dd10b87684bb96
+    image: timescale/timescaledb:2.30.0-pg16@sha256:75d58b53f3337a6babd3a1cce5e503f2300bdede62dd7d743651deb1a95b6d76
     profiles: ["timescaledb"]
     environment:
       POSTGRES_DB: kamerplanter_sensors_e2e
