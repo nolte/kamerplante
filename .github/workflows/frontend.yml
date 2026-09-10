@@ -342,8 +342,8 @@ jobs:
   # CRITICAL. A *high*-severity advisory in shipped JavaScript was therefore
   # invisible to every gate in this repository — and one was sitting there.
   #
-  # `--omit-dev` mirrors the backend's split: requirements.txt is audited per
-  # pull request, requirements-dev.txt only weekly, because dev tooling never
+  # `--omit-dev` mirrors the backend's split: the runtime lock is audited per
+  # pull request, the dev extra only weekly, because dev tooling never
   # ships. Dev dependencies are covered by the scheduled job below.
   npm-audit:
     name: Dependency CVE audit

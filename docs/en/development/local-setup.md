@@ -168,9 +168,10 @@ For pure backend development without cluster overhead, you can start the FastAPI
 # Start ArangoDB and Redis with Docker Compose
 docker-compose up -d arangodb valkey
 
-# Install Python dependencies
+# Install Python dependencies from the lock (uv: https://docs.astral.sh/uv/)
 cd src/backend
-pip install -e ".[dev]"
+uv sync --locked --extra dev
+source .venv/bin/activate
 
 # Set environment variables
 export ARANGODB_HOST=localhost

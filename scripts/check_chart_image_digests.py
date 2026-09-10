@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""Refuse a Kamerplanter image reference in the Helm chart without a digest.
+"""Refuse a Kamerplanter image reference in the RELEASE chart without a digest.
 
-Issue #987: the chart referenced `ghcr.io/nolte/kamerplanter-*:latest`. A tag
-that is rewritten by every publish cannot be rolled back to — "go back to the
-previous image" resolves to whatever is current — so the documented recovery
-path was inert in exactly the situation it exists for. The values now carry
-`tag: <channel>@sha256:<digest>`, and this check is what keeps them that way.
+Issue #987: the released chart referenced `ghcr.io/nolte/kamerplanter-*:latest`.
+A tag that is rewritten by every publish cannot be rolled back to — "go back to
+the previous image" resolves to whatever is current — so the documented recovery
+path was inert in exactly the situation it exists for. The release job
+(`publish-helm-charts` in docker-publish.yml) now rewrites every such reference
+to `tag: <version>@sha256:<digest>` through scripts/ci/pin_chart_image_digests.sh
+before the chart is packaged, and this check runs right after that step, on the
+rewritten file, as the independent proof that nothing escaped.
 
-It runs in the required `static` gate rather than in the chart's own
-`skaffold-verify` workflow, which is path-filtered and not required: a pin that
-is only checked when someone happens to touch `helm/**` in a pull request is a
-pin that can be dropped by a merge conflict resolution and noticed by nobody.
+It runs at RELEASE time and nowhere else, on purpose. Until 2026-09-10 the
+develop tree carried `latest@sha256:…` pins too, kept current by a Renovate
+rule, and this check sat in the required `static` gate to keep them there. That
+develop-side pin fed a chart no deployment consumes — ArgoCD tracks a released
+chart version, and docs/deployment/ci-cd.md says out loud that nothing points
+at the `-dev` channel — while the Renovate branch carrying the next digest was
+rebased by every publish and never merged (#1326). The develop values reference
+`latest` again, the release pins, and the guard follows the pin.
 
-Two things are checked, and neither is the interesting failure:
+Two things are checked:
 
   1. every Kamerplanter image reference carries `@sha256:<64 hex>`
   2. all references to the SAME repository within one file carry the SAME
      digest — the backend image appears three times (api, celery-worker,
-     celery-beat), so a half-applied bump would ship two builds of one
+     celery-beat), so a half-applied rewrite would ship two builds of one
      application against one database schema
-
-What this CANNOT check is whether the pinned digest is the CURRENT one. Nothing
-inside the repository can: the answer lives in the registry. That is the
-residual risk of moving delivery onto an updater — a stalled Renovate stops
-deploys silently, where a broken publish step fails loudly. If that risk is to
-be closed, it is closed by a scheduled job that compares these digests against
-`:latest` in GHCR and reports drift, not by anything here.
 
 Third-party images (arangodb, timescale/timescaledb) are deliberately out of
 scope: they sit on upstream version tags that Renovate ages, and folding them in
@@ -47,13 +47,12 @@ CHART_GLOB = "helm/**/values*.yaml"
 # The images this repository builds and publishes. Everything else is upstream.
 OWNED_PREFIX = "ghcr.io/nolte/kamerplanter-"
 
-# Renovate's helm-values manager matches any key ending in `image` (case
-# insensitive) that carries `repository` plus `tag`/`version`; the same
-# heuristic is used here so the guard and the updater see the same references.
+# pin_chart_image_digests.sh addresses `..image.repository` / `..image.tag`
+# pairs by YAML path; the same shape is matched here so the guard and the
+# rewrite see the same references.
 IMAGE_KEY_RE = re.compile(r"image$", re.IGNORECASE)
 
-# `<channel>@sha256:<64 hex>` — the shape Renovate writes for a pinned tag
-# (autoReplaceStringTemplate `{{newValue}}{{#if newDigest}}@{{newDigest}}{{/if}}`).
+# `<version>@sha256:<64 hex>` — the shape pin_chart_image_digests.sh writes.
 PINNED_TAG_RE = re.compile(r"^[\w][\w.\-]*@sha256:[0-9a-f]{64}$")
 
 
@@ -111,9 +110,9 @@ def main() -> int:
                     problems.append(
                         f"{where}\n"
                         f"    {repository}:{tag}\n"
-                        "    is not pinned. Use `tag: <channel>@sha256:<digest>`; resolve the\n"
+                        "    is not pinned. Use `tag: <version>@sha256:<digest>`; resolve the\n"
                         "    digest with `docker buildx imagetools inspect "
-                        f"{repository}:<channel>`."
+                        f"{repository}:<version>`."
                     )
                     continue
                 digest = tag.split("@", 1)[1]

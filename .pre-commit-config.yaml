@@ -466,7 +466,7 @@ repos:
   # marker rather than a ban — the 19 sites in the tree carry one, and eight of
   # them say "needs follow-up" instead of pretending to be settled.
   #
-  # `language: python` with PyYAML, like the chart-digest hook below: the
+  # `language: python` with PyYAML: the
   # required `static` job runs on a bare runner with none of the project's
   # dependencies installed. always_run, because deleting a workflow moves the
   # answer as much as editing one.
@@ -818,38 +818,9 @@ repos:
           - --schemafile
           - src/backend/app/migrations/seed_data/schemas/substrates.schema.yaml
 
-  # ── Chart image digests (#987) ─────────────────────────────────────────
-  # Refuses a `ghcr.io/nolte/kamerplanter-*` image reference in the chart that
-  # is not pinned to a digest. The chart shipped `:latest` with an explicit
-  # `pullPolicy: IfNotPresent`, which is both halves of one delivery defect: the
-  # tag moved, so a rollback had nothing to name, and the explicit pull policy
-  # beat the implicit `Always` that Kubernetes applies to a `:latest` reference,
-  # so a node with a cached image served the old build straight through a
-  # `rollout restart`.
-  #
-  # Here rather than in `skaffold-verify.yml`, which does lint and render the
-  # chart but is path-filtered AND not a required check: a pin inspected only
-  # when someone happens to touch `helm/**` in a pull request can be dropped in
-  # a conflict resolution and noticed by nobody.
-  #
-  # always_run, no `files:` filter — the deploy path is what this protects, and
-  # a commit that deletes a values file moves the answer as much as one that
-  # edits it. PyYAML in an isolated env like the Steckbrief hook above, because
-  # the required `static` job runs on a bare runner with none of the project's
-  # dependencies installed. ~0.05 s.
-  #
-  # Note what it does NOT prove: that the pinned digest is the CURRENT one. That
-  # answer lives in the registry, not in the tree — see the script header.
+  # ── Nuclei binary pin (#1177) ────────────────────────────────────────────
   - repo: local
     hooks:
-      - id: chart-image-digests
-        name: chart images are digest-pinned (#987)
-        entry: python3 scripts/check_chart_image_digests.py
-        language: python
-        additional_dependencies: ['PyYAML>=6.0']
-        always_run: true
-        pass_filenames: false
-
       - id: nuclei-version-pin
         name: the Nuclei binary is pinned, not `latest` (#1177)
         # `always_run`, because the thing this catches is not a change to any

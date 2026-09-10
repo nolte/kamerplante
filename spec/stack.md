@@ -191,9 +191,10 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Python-Dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Python-Dependencies — aus dem Lock, hash-verifiziert (NFR-009 §2.3)
+COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project
 
 # Runtime Stage
 FROM python:3.14-slim
@@ -1929,8 +1930,8 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          uv sync --locked --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run Ruff (Linting)
         run: cd backend && ruff check .
@@ -2312,10 +2313,12 @@ pyenv local 3.14
 docker run -it python:3.14-slim bash
 ```
 
-#### Requirements Management
+#### Dependency Management
+
+Deklariert in `pyproject.toml` (`[project].dependencies`, Dev-Extra), aufgelöst in `uv.lock` (`uv lock`), installiert mit `uv sync --locked` (NFR-009). Zur Orientierung der Kern der Deklaration:
 
 ```txt
-# requirements.txt
+# pyproject.toml — [project].dependencies (Auszug)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.10.0
@@ -2332,7 +2335,7 @@ bcrypt>=4.0                       # Passwort-Hashing (bcrypt direkt, siehe ADR-0
 slowapi>=0.1.9                    # Rate Limiting (nutzt Redis als Backend)
 cryptography>=42.0                # Fernet/AES-256 für Provider-Secret-Verschlüsselung
 
-# requirements-dev.txt
+# pyproject.toml — [project.optional-dependencies].dev (Auszug)
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0

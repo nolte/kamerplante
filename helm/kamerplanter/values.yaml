@@ -1,9 +1,25 @@
 # -- IMAGE PINNING INVARIANT (#1025, and #1024 which measured it).
 #
-# Every ``image.tag`` in this chart is ``latest@sha256:<digest>``. The digest is
-# what identifies the bytes; the ``latest`` prefix is only a human-readable label
-# in front of it. Together with ``pullPolicy: IfNotPresent`` that is exact and
-# cheap: the kubelet never re-resolves a tag, because a digest cannot move.
+# In a RELEASED chart every Kamerplanter ``image.tag`` is
+# ``<version>@sha256:<digest>``: the release job rewrites it before packaging
+# (scripts/ci/pin_chart_image_digests.sh) and scripts/check_chart_image_digests.py
+# proves it did. The digest is what identifies the bytes; the version in front
+# of it is only a human-readable label. Together with ``pullPolicy: IfNotPresent``
+# that is exact and cheap: the kubelet never re-resolves a tag, because a digest
+# cannot move.
+#
+# In THIS tree the tag is ``latest``. Two things read this tree, and neither
+# resolves that tag: Skaffold deploys it into the dev cluster with every owned
+# image reference — main containers AND the frontend init container —
+# overridden by ``setValueTemplates`` in skaffold.yaml to the locally built
+# image; and docker-publish packages it as the ``-dev`` chart, whose OCI tag is
+# rewritten by every ``helm/`` merge and which no deployment points at
+# (docs/deployment/ci-cd.md, "Zwei Kanäle"). Until 2026-09-10 the develop tree
+# carried ``latest@sha256:…`` too, kept current by a Renovate rule; that fed
+# nothing and its pull request was rebased by every publish and never merged
+# (#1326), so it was removed. A new owned image reference here MUST be added
+# to skaffold.yaml's overrides, or the dev cluster pulls ghcr.io's ``latest``
+# with ``IfNotPresent`` — the cache trap described below.
 #
 # **A deployment overlay must NOT add a per-controller ``image.tag`` override.**
 # Doing so replaces a digest with a mutable tag, and ``IfNotPresent`` then means
@@ -78,47 +94,44 @@ defaultPodOptions:
     seccompProfile:
       type: RuntimeDefault
 
-# -- Image references: immutable digests, not moving tags (#987)
+# -- Image references (#987)
 #
-# Every Kamerplanter-owned image below is addressed as
-# `tag: <channel>@sha256:<digest>`. READ THE PART AFTER THE `@`: the digest is
+# Every Kamerplanter-owned image below is addressed as `tag: latest` HERE and as
+# `tag: <version>@sha256:<digest>` in the released chart — see the invariant at
+# the top of this file. READ THE PART AFTER THE `@` in a release: the digest is
 # what the kubelet resolves and it is content-addressed, so the reference cannot
-# move underneath a running cluster. The `latest` in front of it is NOT a moving
-# reference here — it is a label recording which channel the digest was taken
-# from. Nothing in the deploy path resolves it.
-#
-# Why this replaced the bare `tag: latest`: `latest` is rewritten by every
-# publish, so "roll back to the previous image" had nothing to name — the
-# reference it targets moves with the very deploy it is meant to undo. The
-# documented recovery path was inert in exactly the situation it exists for.
+# move underneath a running cluster. `latest` is rewritten by every publish, so
+# "roll back to the previous image" had nothing to name when the released chart
+# still carried it — the documented recovery path was inert in exactly the
+# situation it exists for. That is what the release-time rewrite fixes.
 #
 # Why the digest goes INTO `tag:` and not into the `digest:` field that
-# bjw-s/common also offers: Renovate keeps these current, and its `helm-values`
-# manager only knows `repository` + `tag`. It writes a pin as
-# `{{newValue}}@{{newDigest}}` into the tag string and never looks at a sibling
-# `digest:` key — so using that field would leave Renovate bumping the tag while
-# the digest stayed behind. That is the same "a tag bumped without its digest
-# would leave us silently on the old image" failure renovate.json5 already
+# bjw-s/common also offers: pin_chart_image_digests.sh addresses the same
+# `repository` + `tag` pair the guard checks, and one field carrying the whole
+# reference cannot be half-updated — a tag bumped without its digest would leave
+# a cluster silently on the old image, which is the failure renovate.json5
 # guards against for the workflow images.
 #
-# How a new version reaches a cluster now — the tag no longer moves, so this
-# replaces "dispatch docker-publish, then rollout restart":
-#   1. docker-publish pushes the image and moves `:latest` in GHCR
-#   2. Renovate opens the grouped `kamerplanter images` digest PR, it merges
-#   3. ArgoCD syncs the new digest; pods roll because the pod spec changed
-# Rollback is `git revert` of that commit — ArgoCD reconciles it the same way.
+# How a new version reaches a cluster:
+#   1. docker-publish pushes the images and moves `:latest` in GHCR on every
+#      develop merge — nothing deploys from that
+#   2. a maintainer publishes a release; the same workflow pins every image here
+#      to `<version>@sha256:<digest>` and pushes the chart as that version
+#   3. the GitOps repository moves ArgoCD's `targetRevision` to it; pods roll
+#      because the pod spec changed
+# Rollback is moving `targetRevision` back — the previous chart version carries
+# its own immutable digests.
 #
 # pullPolicy stays `IfNotPresent` deliberately. A digest is content-addressed:
 # an image already present on the node IS the requested bytes, so a re-pull can
 # only confirm what is there, and `Always` would make every pod start depend on
-# GHCR being reachable. The same setting was a trap with the old moving tag —
-# an explicit `IfNotPresent` beats the implicit `Always` Kubernetes applies to
-# a `:latest` reference, so a node with a cached `latest` kept serving the old
+# GHCR being reachable. The same setting IS a trap with a moving tag — an
+# explicit `IfNotPresent` beats the implicit `Always` Kubernetes applies to a
+# `:latest` reference, so a node with a cached `latest` keeps serving the old
 # image straight through a `rollout restart` (that is how the inference-service
-# answered 404 on the pest routes for weeks).
-#
-# scripts/check_chart_image_digests.py fails the required `static` gate if a
-# Kamerplanter image in this chart loses its digest.
+# answered 404 on the pest routes for weeks). Which is why every owned
+# reference in this tree, where the tag IS `latest`, is overridden by Skaffold
+# and why nothing else deploys it.
 controllers:
   backend:
     type: deployment
@@ -144,7 +157,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-backend
-          tag: latest@sha256:48305a7c6ab48f14dd19d9d34d34dbecdb6ed7226bf19284d83b63edb0909747
+          tag: latest
           pullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -346,7 +359,7 @@ controllers:
       init-runtime-config:
         image:
           repository: ghcr.io/nolte/kamerplanter-frontend
-          tag: latest@sha256:2042b378514a4f3656570917c995414e8ba0ccf9ac62fb5765216e0390c35358
+          tag: latest
           pullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -383,7 +396,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-frontend
-          tag: latest@sha256:2042b378514a4f3656570917c995414e8ba0ccf9ac62fb5765216e0390c35358
+          tag: latest
           pullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -513,7 +526,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-backend
-          tag: latest@sha256:48305a7c6ab48f14dd19d9d34d34dbecdb6ed7226bf19284d83b63edb0909747
+          tag: latest
           pullPolicy: IfNotPresent
         command: ["celery"]
         args: ["-A", "app.tasks", "worker", "--loglevel=info", "--concurrency=2"]
@@ -600,7 +613,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-backend
-          tag: latest@sha256:48305a7c6ab48f14dd19d9d34d34dbecdb6ed7226bf19284d83b63edb0909747
+          tag: latest
           pullPolicy: IfNotPresent
         command: ["celery"]
         args: ["-A", "app.tasks", "beat", "--loglevel=info", "--schedule=/tmp/celery-beat/celerybeat-schedule"]
@@ -682,7 +695,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-vectordb
-          tag: latest@sha256:3ebe2e5dd91dae44d823a122d90d7903d7f5d5e81846627fe4070794ed730865
+          tag: latest
           pullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -760,7 +773,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-inference-service
-          tag: latest@sha256:49c4c402bffc1f4cc0a3c486e52e1126e2e668cdf900545aa260dcc322f41cee
+          tag: latest
           pullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
@@ -977,16 +990,12 @@ controllers:
   #     main:
   #       image:
   #         repository: ghcr.io/nolte/kamerplanter-embedding-service
-  #         # Pin a digest before enabling this, exactly like the live
-  #         # controllers above: `<version>@sha256:<digest>`, resolved with
-  #         # `docker buildx imagetools inspect \
-  #         #    ghcr.io/nolte/kamerplanter-embedding-service:<version>`.
-  #         # This example read `tag: latest` until #987 — which is how an
-  #         # operator uncommenting it would have re-introduced the moving
-  #         # reference the rest of this file just lost. A commented example
-  #         # teaches as loudly as a live one, and the digest guard cannot see
-  #         # into comments.
-  #         tag: "<version>@sha256:<digest>"
+  #         # `latest` like the live controllers above; the release job pins it
+  #         # to `<version>@sha256:<digest>` and the release-time guard refuses
+  #         # an owned image that escaped the rewrite. Do not uncomment this
+  #         # into a deployment overlay with a moving tag — see the invariant
+  #         # at the top of this file.
+  #         tag: latest
   #         pullPolicy: IfNotPresent
   #       securityContext:
   #         allowPrivilegeEscalation: false

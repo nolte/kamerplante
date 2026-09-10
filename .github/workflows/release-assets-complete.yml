@@ -23,7 +23,7 @@ name: Release Assets Complete
 # says so.
 #
 # It is SCHEDULED, not a pull-request gate, for the same reason release-lag.yml
-# and chart-image-digest-freshness.yml are: release completeness is a fact that
+# is: release completeness is a fact that
 # changes with NO COMMIT. It becomes true minutes after a tag is pushed, by a
 # workflow a pull request never runs. A PR gate cannot observe it at all.
 #
@@ -48,8 +48,8 @@ name: Release Assets Complete
 on:
   schedule:
     # 10:00 UTC daily — the first free hour after the 00:00 Nuclei nightly, the
-    # 01:00/01:17/01:30 security+E2E block, the 06:00 digest-freshness job and
-    # the 09:00 release-lag job, so the alerting jobs do not cluster. Daily is
+    # 01:00/01:17/01:30 security+E2E block and the 09:00 release-lag job, so
+    # the alerting jobs do not cluster. Daily is
     # the right cadence: releases are cut at most weekly here, and the settle
     # window is measured in hours, so sampling more often only adds noise.
     - cron: "0 10 * * *"

@@ -42,20 +42,14 @@ on:
       - '.github/workflows/release-lag.yml'
       - '.github/workflows/release-assets-complete.yml'
       - '.github/workflows/backend.yml'
-      # The pinned toolchain that compiles the locks. It determines their
-      # bytes down to the header comment, so a bump that touches only this
-      # file has to meet `Lock staleness` — otherwise the one change most
-      # able to move a lock is the one change that never runs the gate
-      # measuring it, and the drift reappears on develop with no pull
-      # request to attribute it to (#1296).
-      - '.github/pip-tools-requirements.txt'
       # The Taskfile holds the lock-compiling invocation itself — the
       # `Lock staleness` job runs `task deps:check`, and every backend job
       # above runs `task lint:backend` / `task test:backend:*`. Without these
-      # entries a pull request that drops `--no-strip-extras` (#903) or
-      # `--no-build-isolation` (#1296) from `deps:compile`, or that rewires the
-      # include, triggers no backend job at all: the gate's own definition was
-      # the one input the gate did not watch.
+      # entries a pull request that changes the `uv lock` invocation in
+      # `deps:compile` (it used to be two pip-compile lines whose flags moved
+      # the lock, #903/#1296), or that rewires the include, triggers no backend
+      # job at all: the gate's own definition was the one input the gate did
+      # not watch.
       - '.taskfiles/backend.yaml'
       - 'Taskfile.yaml'
   pull_request:
@@ -81,20 +75,14 @@ on:
       - '.github/workflows/release-lag.yml'
       - '.github/workflows/release-assets-complete.yml'
       - '.github/workflows/backend.yml'
-      # The pinned toolchain that compiles the locks. It determines their
-      # bytes down to the header comment, so a bump that touches only this
-      # file has to meet `Lock staleness` — otherwise the one change most
-      # able to move a lock is the one change that never runs the gate
-      # measuring it, and the drift reappears on develop with no pull
-      # request to attribute it to (#1296).
-      - '.github/pip-tools-requirements.txt'
       # The Taskfile holds the lock-compiling invocation itself — the
       # `Lock staleness` job runs `task deps:check`, and every backend job
       # above runs `task lint:backend` / `task test:backend:*`. Without these
-      # entries a pull request that drops `--no-strip-extras` (#903) or
-      # `--no-build-isolation` (#1296) from `deps:compile`, or that rewires the
-      # include, triggers no backend job at all: the gate's own definition was
-      # the one input the gate did not watch.
+      # entries a pull request that changes the `uv lock` invocation in
+      # `deps:compile` (it used to be two pip-compile lines whose flags moved
+      # the lock, #903/#1296), or that rewires the include, triggers no backend
+      # job at all: the gate's own definition was the one input the gate did
+      # not watch.
       - '.taskfiles/backend.yaml'
       - 'Taskfile.yaml'
   schedule:
@@ -136,13 +124,17 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
-        # Install from the pinned, hash-verified dev lock (single source of
-        # install truth, NFR-009 §2.3), then add the app package itself with
-        # --no-deps so nothing is re-resolved from PyPI.
+        # Install from the hash-verified lock (single source of install truth,
+        # NFR-009 §2.3): `uv sync --locked` refuses a lock that no longer
+        # satisfies pyproject.toml and verifies every artifact against the hash
+        # the lock records, then installs the app package itself editable.
+        # uv is pinned like every other tool here; the pin is tracked by the
+        # workflow regex manager in renovate.json5. The project environment is
+        # put on PATH so the Taskfile targets below run the locked ruff/pytest.
         run: |
-          python -m pip install 'pip==26.1.2'
-          pip install --require-hashes -r requirements-dev.txt
-          pip install --no-deps -e .
+          python -m pip install 'uv==0.12.12'
+          uv sync --locked --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       # Invoked through the Taskfile so the pipeline and a contributor run the
       # identical thing (continuous-integration §E). Before this, `ruff format
@@ -209,47 +201,33 @@ jobs:
           version: 3.52.0
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Recompile locks and fail on drift
-        # `task deps:check` IS this gate. It pulls in `deps:compile` (the only
-        # copy of the pip-compile flags in the repository) which pulls in
-        # `deps:toolchain` (`pip install --no-deps -r
-        # .github/pip-tools-requirements.txt` followed by `pip check`), then
-        # diffs the regenerated locks against the committed ones. This is the
-        # NFR-009 §2.3 lockfile-integrity gate: it catches a pyproject.toml bump
-        # that was not re-compiled, or a hand-edited lock.
+      - name: Install uv
+        run: python -m pip install 'uv==0.12.12'
+      - name: Check the lock against pyproject.toml
+        # `task deps:check` is the first half of this gate: `uv lock --check`
+        # fails when src/backend/uv.lock does not satisfy pyproject.toml,
+        # without touching the file. The Taskfile is the only copy of the
+        # invocation, so this job and `task deps:compile` cannot disagree.
         #
-        # It used to inline both `pip-compile` lines here, which made this
-        # workflow a second copy of flags that also live in
-        # .taskfiles/backend.yaml — and that file was not in this workflow's
-        # `paths:`, so a pull request dropping `--no-strip-extras` (#903) from
-        # the Taskfile copy would have run no backend job at all. Both halves are
-        # fixed: the flags exist once, and the file holding them triggers this
-        # workflow.
-        #
-        # Why the toolchain is pinned as a whole set, and not just pip-tools:
-        # pip-compile writes the invocation that produced a lock into the lock's
-        # header and reconstructs that line from *click's* parameter metadata
-        # rather than from argv. On 2026-08-27 click went 8.4.2 -> 8.5.0, a bare
-        # flag's `Option.default` became a sentinel instead of `False`, pip-tools'
-        # "skip options left at their default" test stopped matching, and
-        # `--no-index` appeared in the header of both locks. No package version
-        # and no hash moved, yet every backend pull request and `develop` itself
-        # went red on a difference that no commit had caused (#1296). pip is
-        # pinned rather than merely upgraded for the same class of reason: pip
-        # 26.2 removed `pip._internal.utils.compat.stdlib_pkgs`, which pip-tools
-        # imports, so `pip-compile` died with an ImportError before doing any
-        # work (#929) — the unpinned half broke the pinned half.
-        #
-        # The per-flag rationale (`--generate-hashes`, `--no-strip-extras`,
-        # `--no-build-isolation`) sits beside the invocation in
-        # .taskfiles/backend.yaml, and the per-pin rationale beside the pins in
-        # .github/pip-tools-requirements.txt — one place each, next to the thing
-        # they explain.
+        # This used to recompile both pip-compile locks and diff them, which
+        # made the gate a function of a whole pinned Python toolchain (pip,
+        # pip-tools, click, setuptools — #929, #1296). uv resolves from the
+        # lock's own recorded inputs, so the only version this job depends on
+        # is uv's, pinned above.
         run: |
           if ! task deps:check; then
-            echo "::error::Lockfiles are stale. Run 'task deps:compile' and commit the result." >&2
+            echo "::error::src/backend/uv.lock is stale. Run 'task deps:compile' and commit the result." >&2
             exit 1
           fi
+      - name: Verify every artifact hash the lock records
+        # The second half. `uv lock --check` compares the lock against
+        # pyproject.toml and nothing else — measured with uv 0.12.12: a lock
+        # with every hash line altered still passes it. The old gate diffed a
+        # recompiled lock against the committed one and therefore caught a
+        # hand-edited hash or an in-range version swap; only an install does
+        # that now. `--no-install-project` keeps it to the dependency set the
+        # image ships, and `--locked` refuses to re-resolve.
+        run: uv sync --locked --no-install-project
 
   pip-audit:
     name: Dependency CVE audit
@@ -263,21 +241,28 @@ jobs:
           python-version: '3.14'
           allow-prereleases: true
 
-      - name: Install pip-audit
-        # Pinned like pip-tools below. An unpinned scanner is a floating input:
-        # the same commit can pass today and fail tomorrow because the tool
-        # changed, which makes a red run unattributable (continuous-integration
-        # §C).
-        run: python -m pip install 'pip==26.1.2' 'pip-audit==2.10.1'
+      - name: Install uv and pip-audit
+        # Both pinned. An unpinned scanner is a floating input: the same commit
+        # can pass today and fail tomorrow because the tool changed, which makes
+        # a red run unattributable (continuous-integration §C).
+        run: python -m pip install 'uv==0.12.12' 'pip-audit==2.10.1'
+      - name: Export the locks in the format pip-audit reads
+        # pip-audit has no uv.lock reader, so the lock is exported — versions and
+        # hashes verbatim, the project itself omitted — into requirements files
+        # that exist only for the length of this job. `--locked` refuses to
+        # export from a lock that no longer satisfies pyproject.toml.
+        run: |
+          uv export --locked --no-emit-project --format requirements.txt -o /tmp/requirements.txt
+          uv export --locked --no-emit-project --extra dev --format requirements.txt -o /tmp/requirements-dev.txt
 
       - name: Audit pinned dependencies for known CVEs
         # Audits the exact committed lock that ships (NFR-009 §4.1). Runs on every
         # PR, every push to develop, and weekly via the schedule trigger above.
         # --strict fails (instead of silently skipping) if any package cannot be
         # audited; --desc prints each advisory description; --no-deps audits the
-        # precise pinned versions of the full compiled lock without re-resolving
+        # precise pinned versions of the full exported lock without re-resolving
         # from PyPI, so the audit matches what the image ships. PR-blocking.
-        run: pip-audit --strict --desc --no-deps --requirement requirements.txt
+        run: pip-audit --strict --desc --no-deps --requirement /tmp/requirements.txt
 
       - name: Audit dev-tool dependencies for known CVEs (weekly)
         # Dev tooling (pytest/mypy/moto/black/ruff and their transitive deps) is
@@ -287,7 +272,7 @@ jobs:
         # a scheduled run is not a PR check, so a real finding fails the scheduled
         # workflow (visible) without gating any pull request.
         if: github.event_name == 'schedule'
-        run: pip-audit --strict --desc --no-deps --requirement requirements-dev.txt
+        run: pip-audit --strict --desc --no-deps --requirement /tmp/requirements-dev.txt
 
   pip-licenses:
     name: License allowlist gate
@@ -305,8 +290,10 @@ jobs:
         # The license scanner reads installed package metadata, so the pinned set
         # must be installed first (NFR-009 §4.3).
         run: |
-          python -m pip install 'pip==26.1.2' 'pip-licenses==5.5.5'
-          pip install --require-hashes -r requirements.txt
+          python -m pip install 'uv==0.12.12'
+          uv sync --locked --no-install-project
+          uv pip install 'pip-licenses==5.5.5'
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Enforce license allowlist
         # Fail the build on any dependency whose license is outside the allowlist
@@ -338,6 +325,9 @@ jobs:
     with:
       python-version: '3.14'
       working-directory: src/backend
-      install-command: pip install --require-hashes -r requirements-dev.txt && pip install --no-deps -e .
+      # Same install as lint-test above. `$GITHUB_PATH` persists across the
+      # steps of the reusable job, so the bare `pytest` and `coverage` it runs
+      # afterwards resolve to the synced project environment.
+      install-command: python -m pip install 'uv==0.12.12' && uv sync --locked --extra dev && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       coverage-source: app
       fail-under: 60

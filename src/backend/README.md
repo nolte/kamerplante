@@ -20,8 +20,9 @@ Python/FastAPI REST API for plant lifecycle management with polyglot persistence
 ## Getting Started
 
 ```bash
-# Install in development mode
-pip install -e ".[dev]"
+# Install the locked dependency set plus the dev extra (needs uv)
+uv sync --locked --extra dev
+source .venv/bin/activate
 
 # Run API server
 uvicorn app.main:app --reload --port 8000

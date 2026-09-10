@@ -4,14 +4,15 @@
 Issue #1236 — the LAST hop of the delivery chain, and the only one nothing
 measures. A merge reaches a cluster in four hops::
 
-    merge -> docker-publish (GHCR) -> Renovate digest PR (chart pin) -> ArgoCD sync
+    merge -> docker-publish (GHCR) -> release (chart pins the digest) -> ArgoCD sync
 
-``scripts/ci/check_digest_freshness.py`` measures hop 3: is the digest in
-``helm/kamerplanter/values.yaml`` still the one GHCR serves for its channel? It
-was **green throughout the 2026-08-17 incident, and correctly so** — the chart
-pinned a perfectly good build. Nobody measured hop 4: does the *pod* run those
-bytes? It did not, for days, and it surfaced only when an operator re-triggered
-a bug a merged fix had already removed.
+Hop 3 used to be a Renovate pull request carrying the digest into the develop
+tree, watched by a freshness lane; both were removed on 2026-09-10 because no
+deployment consumed that tree (see below), and the release job pins the digest
+itself. That hop-3 check was **green throughout the 2026-08-17 incident, and
+correctly so** — the chart pinned a perfectly good build. Nobody measured hop
+4: does the *pod* run those bytes? It did not, for days, and it surfaced only
+when an operator re-triggered a bug a merged fix had already removed.
 
 This script asks the instance itself, comparing two values that are the same
 40-character git SHA by construction:
@@ -149,10 +150,10 @@ there is no workflow step to carry it into an issue: :data:`EXIT_OK` for
 :data:`EXIT_UNDETERMINED` for anything undetermined, :data:`EXIT_USAGE` for a
 bad invocation.
 
-The registry plumbing below deliberately duplicates
-``check_digest_freshness.py`` rather than importing it: the two answer different
-questions of the same registry on different schedules, and a change to the
-pin-freshness job must not silently alter this one.
+The registry plumbing below is deliberately self-contained (it used to
+duplicate the since-removed ``check_digest_freshness.py`` rather than import it):
+this script answers one question of the registry on its own schedule, and no
+sibling lane can silently alter it.
 """
 
 from __future__ import annotations

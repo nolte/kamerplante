@@ -32,7 +32,7 @@ dependencies = [
     "psycopg[binary,pool]>=3.2.0,<4.0.0",
     "pgvector>=0.3.6,<1.0.0",
     "jinja2>=3.1,<4.0.0",
-    "weasyprint>=70,<70.1",
+    "weasyprint>=70,<71.0.0",
     "qrcode[pil]>=8.0,<9.0.0",
     "zeroconf>=0.131.0,<1.0.0",
     "pywebpush>=2.0.0,<3.0.0",
@@ -89,6 +89,31 @@ markers = [
 [tool.black]
 line-length = 120
 target-version = ["py314"]
+
+[tool.uv]
+# The lock toolchain (NFR-009 §2.3). uv replaced pip-tools on 2026-09-10: Renovate's
+# pip-compile manager could not parse the lock header this project needs and had
+# silently stopped regenerating the locks on 2026-08-02 (#1303/#906 vs. its option
+# allowlist), and the pip-tools sidecar could not be held at the pip/click versions
+# it survives on (#929, #1296). `uv lock` writes `uv.lock`; `uv sync --locked`
+# installs from it with hash verification; Renovate's pep621 manager runs
+# `uv lock --upgrade-package` in the same pull request that moves a range here.
+# EXACT on purpose: Renovate's pep621 processor resolves the uv it relocks with
+# from this value (its `constraints.uv` falls back to it), the Dockerfile copies
+# `ghcr.io/astral-sh/uv:<same>` and CI installs `uv==<same>`. A floor would let
+# the relocking side move to a newer uv — and a newer lock revision — while the
+# reading sides stay pinned, which is the #1296 class (toolchain halves aging
+# apart) all over again. renovate.json5 groups all three references into one
+# `uv toolchain` pull request. Contributors: `uv self update 0.12.12`, or run
+# the Taskfile targets through `uvx --from 'uv==0.12.12' uv …`.
+required-version = "==0.12.12"
+# Two runtime dependencies ship as sdists only (aquacropeto, http-ece via
+# pywebpush), so `uv sync` builds them. Without this their `[build-system]`
+# requires would be fetched unpinned at every image build — the floating input
+# #1296/#1303 removed with `--no-build-isolation` under pip-tools. Constraining
+# the build backend keeps that reproducibility under uv without disabling
+# isolation. Aged by the `python build backend` regex rule in renovate.json5.
+build-constraint-dependencies = ["setuptools==84.0.0", "wheel==0.48.0"]
 
 [build-system]
 requires = ["setuptools>=75.0"]

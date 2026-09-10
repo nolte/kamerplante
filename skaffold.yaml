@@ -62,6 +62,13 @@ deploy:
           controllers.backend.containers.main.image.tag: "{{.IMAGE_TAG_kamerplanter_backend}}"
           controllers.frontend.containers.main.image.repository: "{{.IMAGE_REPO_kamerplanter_frontend}}"
           controllers.frontend.containers.main.image.tag: "{{.IMAGE_TAG_kamerplanter_frontend}}"
+          # The init container renders runtime-config from the SAME frontend
+          # image; without these two lines it would pull ghcr.io's `latest`
+          # (values.yaml carries no digest on develop) while the main container
+          # runs the local build — and `IfNotPresent` would then keep a cached
+          # `latest` through every rollout restart.
+          controllers.frontend.initContainers.init-runtime-config.image.repository: "{{.IMAGE_REPO_kamerplanter_frontend}}"
+          controllers.frontend.initContainers.init-runtime-config.image.tag: "{{.IMAGE_TAG_kamerplanter_frontend}}"
           controllers.celery-worker.containers.main.image.repository: "{{.IMAGE_REPO_kamerplanter_backend}}"
           controllers.celery-worker.containers.main.image.tag: "{{.IMAGE_TAG_kamerplanter_backend}}"
           controllers.celery-beat.containers.main.image.repository: "{{.IMAGE_REPO_kamerplanter_backend}}"

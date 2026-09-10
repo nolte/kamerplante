@@ -100,7 +100,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-backend
-          tag: latest@sha256:af9bec…   # unveränderlicher Digest — siehe "Bestimmte Image-Version pinnen"
+          tag: 0.2.1@sha256:af9bec…    # unveränderlicher Digest, vom Release-Job gesetzt — siehe "Bestimmte Image-Version pinnen"
         envFrom:
           - secret: kamerplanter-secrets    # ARANGODB_PASSWORD, JWT_SECRET_KEY, FERNET_KEY, ERASURE_TOMBSTONE_SALT
         env:
@@ -331,7 +331,7 @@ controllers:
 
 ### Bestimmte Image-Version pinnen
 
-Das Chart bringt bereits gepinnte Digests mit — du überschreibst sie nur, wenn du eine andere Version willst als die, die das Chart mitliefert. Dann aber vollständig, also mit Digest:
+Ein veröffentlichtes Chart bringt bereits gepinnte Digests mit (der Release-Job setzt sie beim Packen) — du überschreibst sie nur, wenn du eine andere Version willst als die, die das Chart mitliefert. Dann aber vollständig, also mit Digest:
 
 ```yaml
 controllers:

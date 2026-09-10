@@ -99,7 +99,7 @@ controllers:
       main:
         image:
           repository: ghcr.io/nolte/kamerplanter-backend
-          tag: latest@sha256:af9bec…   # immutable digest — see "Pin a specific image version"
+          tag: 0.2.1@sha256:af9bec…    # immutable digest, written by the release job — see "Pin a specific image version"
         envFrom:
           - secret: kamerplanter-secrets    # ARANGODB_PASSWORD, JWT_SECRET_KEY, FERNET_KEY, ERASURE_TOMBSTONE_SALT
         env:
@@ -330,7 +330,7 @@ controllers:
 
 ### Pin a specific image version
 
-The chart already ships pinned digests — override them only if you want a version other than the one the chart carries. In that case, override them completely, digest included:
+A published chart already ships pinned digests (the release job writes them at packaging time) — override them only if you want a version other than the one the chart carries. In that case, override them completely, digest included:
 
 ```yaml
 controllers:

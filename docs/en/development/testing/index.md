@@ -21,10 +21,11 @@ Kamerplanter tests across several **test levels** — from fast, isolated unit t
 
 ```bash
 cd src/backend
-pip install -e ".[dev]"
+uv sync --locked --extra dev      # or: task deps:sync
+source .venv/bin/activate
 ```
 
-This installs all production and development dependencies, including pytest, pytest-asyncio, and pytest-cov.
+This installs exactly the production and development dependencies recorded in `uv.lock` (hash-verified), including pytest, pytest-asyncio, and pytest-cov. Install uv from <https://docs.astral.sh/uv/>.
 
 ### Running Tests
 

@@ -6,17 +6,6 @@
   mode: 'full',
   separateMajorMinor: true,
   separateMinorPatch: false,
-  // Let the `pip-compile` manager own the backend locks explicitly. It reads the
-  // pip-compile header of each requirements file, updates the constraints in the
-  // referenced source (src/backend/pyproject.toml) and regenerates the lock in the
-  // same PR (NFR-009 §6.1). If the inherited common preset pins `enabledManagers`
-  // to an allowlist, `pip-compile` must also be present there for these rules to fire.
-  'pip-compile': {
-    managerFilePatterns: [
-      '/^src/backend/requirements\\.txt$/',
-      '/^src/backend/requirements-dev\\.txt$/',
-    ],
-  },
   // ── Helm dev values also carry a third-party pin (#1027) ─────────────────────
   // The built-in `helm-values` manager only matches `values.yaml` by default, so
   // `helm/kamerplanter/values-dev*.yaml` — which pin `timescale/timescaledb` for
@@ -24,8 +13,7 @@
   // reached them (the defect #1027 records; found while doing #1024). Renovate
   // merges a manager's `managerFilePatterns` with its built-in default rather
   // than replacing it, so this ADDS the dev overrides to scope while `values.yaml`
-  // stays covered by the default pattern (and by the #987/#1024 digest rule in
-  // packageRules below). Widening also exposes the registry-less local Skaffold
+  // stays covered by the default pattern. Widening also exposes the registry-less local Skaffold
   // image names (`kamerplanter-*`) those files reference, which Renovate cannot
   // resolve; the packageRule below disables them by pattern.
   'helm-values': {
@@ -40,52 +28,6 @@
       ],
       pinDigests: true,
     },
-    // ── Kamerplanter's own images in the Helm chart (#987) ───────────────────
-    // This rule IS the deploy mechanism, not a maintenance nicety. The chart
-    // used to reference `ghcr.io/nolte/kamerplanter-*:latest`, and a deploy was
-    // "publish, then restart the pods" — it worked only because the tag moved.
-    // Rollback had nothing to name for the same reason, which is the defect
-    // #987 records. The values now carry `latest@sha256:…`, so the reference no
-    // longer moves and something has to move it: this rule. Publish -> Renovate
-    // digest PR -> merge -> ArgoCD syncs. Rollback is `git revert` of that
-    // commit.
-    //
-    // The rule above does NOT cover these, which is why this one exists and why
-    // `arangodb` in the same file sits on an unpinned tag today: it matches
-    // `matchCategories: ['docker']`, and Renovate's `helm-values` manager
-    // declares `categories: ['helm','kubernetes']` with `pinDigests: false` in
-    // its own defaultConfig. Matching by manager is the only thing that reaches
-    // it. (Verified against the manager source, not inferred from behaviour.)
-    //
-    // Scoped to our own images on purpose. Third-party images in this chart
-    // (arangodb, timescale/timescaledb) are upstream releases on immutable-by-
-    // convention version tags that Renovate already ages; pinning their digests
-    // too is a defensible separate decision, but it is not this one, and doing
-    // it here would have hidden that behind a delivery change.
-    //
-    // grouped + automerge: one commit per deploy is what makes `git revert` a
-    // rollback. Eight separate digest PRs would mean eight commits to revert
-    // and a window where the components disagree about which build they are.
-    {
-      groupName: 'kamerplanter images',
-      matchManagers: [
-        'helm-values',
-      ],
-      matchPackageNames: [
-        '/^ghcr\\.io/nolte/kamerplanter-/',
-      ],
-      pinDigests: true,
-      automerge: true,
-      // Ahead of the maintenance stream: config:base allows 2 PRs per hour, and
-      // this one carries a deploy, not a dependency bump.
-      prPriority: 10,
-      labels: [
-        'dependencies',
-        'deployment',
-      ],
-      commitMessageTopic: 'the Kamerplanter images',
-      commitMessageExtra: 'to the digest published from develop',
-    },
     // ── Registry-less local Skaffold images in the dev values (#1027) ─────────
     // Widening `helm-values` to `values-dev*.yaml` (manager block above) also
     // exposes the local build artefacts those files reference —
@@ -98,11 +40,16 @@
     // automatically instead of silently starting to fail on the next scan.
     //
     // Anchored on the bare name on purpose: the first-party images live under
-    // `ghcr.io/nolte/kamerplanter-*` (base values.yaml, digest-pinned by the
-    // rule above) and start with the registry host, so they are NOT matched by
-    // `^kamerplanter-` and keep their digest-pinning behaviour. The one genuine
-    // third-party pin in these files, `timescale/timescaledb`, is likewise not
-    // matched and is now tracked for version/CVE bumps.
+    // `ghcr.io/nolte/kamerplanter-*` in the base values.yaml and start with the
+    // registry host, so they are NOT matched by `^kamerplanter-`. They are not
+    // managed by Renovate at all any more: on develop they reference `latest`
+    // and only the release job pins them to `<version>@sha256:…`
+    // (scripts/ci/pin_chart_image_digests.sh) — the develop-side digest
+    // write-back this file used to carry (#987/#1024) fed a chart that no
+    // deployment consumed and rebased itself into a loop on every publish
+    // (#1326), so it was removed on 2026-09-10. The one genuine third-party pin
+    // in these files, `timescale/timescaledb`, is likewise not matched and is
+    // tracked for version/CVE bumps in its own cross-manager group below.
     {
       matchManagers: [
         'helm-values',
@@ -134,32 +81,85 @@
       ],
     },
     // ── Python backend dependency management (NFR-009 §6.1) ──────────────────
-    // `src/backend/pyproject.toml` is the abstract single source of truth; the
-    // `requirements*.txt` files are pip-compile locks. Renovate manages both with
-    // the `pip-compile` manager, which bumps the constraint in pyproject.toml AND
-    // recompiles the pinned (hash-locked) requirements files in a SINGLE PR, so the
-    // source constraint and the lock always move together (closing the decorative-
-    // lock drift surface behind PR #563). The default `pip_requirements` and
-    // `pep621` managers are disabled for these backend files so the lock is not
-    // scanned in isolation and the source is not double-managed — this also neutral-
-    // ises any stray `pip_requirements` scan re-enabled by the inherited
-    // `gh-plumbing//renovate-configs/common` preset (that preset is consumed via
-    // `extends` above and could not be inspected offline; the explicit disable rule
-    // below is evaluated last and wins).
+    // `src/backend/pyproject.toml` is the single source of truth and
+    // `src/backend/uv.lock` its hash-bearing lock. The built-in `pep621` manager
+    // owns both: it bumps the range in pyproject.toml when a release leaves it
+    // and runs `uv lock --upgrade-package` in the SAME pull request, so source
+    // and lock always move together. Renovate pins the uv it runs to
+    // `[tool.uv].required-version` from that file (the pep621 uv processor
+    // reads it when no `constraints.uv` is set), which is also what the
+    // Dockerfile and CI install — one floor, three consumers.
+    //
+    // Until 2026-09-10 this was the `pip-compile` manager over two pip-tools
+    // locks. That manager rejects lock-header options outside its allowlist
+    // (`--no-strip-extras`, `--no-build-isolation` — both needed here, #906,
+    // #1303), so from 2026-08-02 it silently extracted nothing, the dashboard
+    // showed `WARN: pip-compile error`, and the `poetry` manager picked the
+    // pyproject up instead and opened source-only pull requests that left the
+    // locks stale (#1371). Poetry 2 reads PEP 621 `[project]` tables, so that
+    // manager is disabled for the backend and exactly one manager reads the
+    // file. (The side services' pyproject files are still read by `poetry`
+    // today; #1374 moves them to uv locks and this rule with them.)
     {
       matchManagers: [
-        'pip_requirements',
-        'pep621',
+        'poetry',
       ],
       matchFileNames: [
         'src/backend/**',
       ],
       enabled: false,
     },
+    // The uv toolchain is referenced three times — `[tool.uv].required-version`
+    // in pyproject.toml (what Renovate relocks with), `uv==` in the workflows
+    // (regex manager below) and `ghcr.io/astral-sh/uv` in the Dockerfile — and
+    // the three are only meaningful together: a relock by a newer uv than the
+    // readers is the #1296 class. One pull request moves all of them.
+    {
+      groupName: 'uv toolchain',
+      matchDatasources: [
+        'pypi',
+        'docker',
+      ],
+      matchPackageNames: [
+        'uv',
+        'ghcr.io/astral-sh/uv',
+      ],
+    },
+    // The build backend uv is constrained to for the two sdist-only backend
+    // dependencies (`[tool.uv].build-constraint-dependencies`), read by the
+    // regex manager below. Grouped so setuptools and wheel move together.
+    {
+      groupName: 'python build backend',
+      matchDatasources: [
+        'pypi',
+      ],
+      matchFileNames: [
+        'src/backend/pyproject.toml',
+      ],
+      matchPackageNames: [
+        'setuptools',
+        'wheel',
+      ],
+    },
+    // In-range releases (a minor or patch inside `>=x,<y`) never leave the
+    // range, so with the default strategy Renovate would propose nothing and
+    // the lock would only ever move on a major. `update-lockfile` keeps the
+    // pyproject range untouched and moves uv.lock for every release, which is
+    // what makes the minor/patch group below fire at all — it could not
+    // before, and a rule that cannot fire is not a policy.
+    {
+      matchManagers: [
+        'pep621',
+      ],
+      matchFileNames: [
+        'src/backend/**',
+      ],
+      rangeStrategy: 'update-lockfile',
+    },
     {
       groupName: 'python minor/patch',
       matchManagers: [
-        'pip-compile',
+        'pep621',
       ],
       matchFileNames: [
         'src/backend/**',
@@ -178,7 +178,7 @@
     {
       groupName: 'python fastapi-stack',
       matchManagers: [
-        'pip-compile',
+        'pep621',
       ],
       matchFileNames: [
         'src/backend/**',
@@ -193,7 +193,7 @@
     {
       groupName: 'python major',
       matchManagers: [
-        'pip-compile',
+        'pep621',
       ],
       matchFileNames: [
         'src/backend/**',
@@ -232,100 +232,6 @@
         'major',
       ],
       enabled: false,
-    },
-    // ── pip held below 26.2 until pip-tools catches up (#929) ───────────────
-    // pip 26.2 removed `pip._internal.utils.compat.stdlib_pkgs`. pip-tools
-    // imports it unconditionally via `piptools.sync`, which `pip-compile` pulls
-    // in while validating its config — so `pip-compile` dies with an ImportError
-    // before doing any work, and the `Lock staleness` gate in backend.yml fails
-    // on every run.
-    //
-    // There is nothing to bump *to*: pip-tools 7.6.1 is the latest release and
-    // is affected, as are 7.6.0 and 7.5.3. pip is therefore pinned explicitly
-    // rather than merely upgraded — in `.github/pip-tools-requirements.txt`,
-    // installed by `task deps:toolchain`, which backend.yml's `Lock staleness`
-    // job reaches through `task deps:check`. (It used to live in a backend.yml
-    // step called "Install pip-tools"; that step no longer exists, and a revisit
-    // trigger that names a step no `grep` can find is a trigger nobody pulls.)
-    // This rule stops Renovate from re-raising the bump that breaks the pin.
-    //
-    // Revisit when pip-tools ships a release that drops the `stdlib_pkgs`
-    // import, then drop this rule and bump both together — pinning pip forever
-    // is the other half of the reproducibility problem, not a resting state.
-    {
-      matchDatasources: [
-        'pypi',
-      ],
-      matchPackageNames: [
-        'pip',
-      ],
-      allowedVersions: '<26.2',
-    },
-    // ── The toolchain that compiles the backend locks (#1296) ───────────────
-    // `.github/pip-tools-requirements.txt` pins pip, pip-tools AND their
-    // transitive dependencies, because pip-compile's output — down to the header
-    // comment it writes into each lock — is a function of that whole set, not of
-    // pip-tools alone. The file deliberately sits OUTSIDE `src/backend/`: the
-    // rule above disables `pip_requirements` there so the compiled locks are not
-    // scanned in isolation, and the toolchain is not a lock, it is the thing that
-    // produces one. Renovate picks it up through the built-in `pip_requirements`
-    // manager, whose default file pattern already matches this name.
-    //
-    // Grouped into ONE pull request on purpose. These versions are only
-    // meaningful together — a click bump beside its pip-tools, not ahead of it —
-    // and a bump here may legitimately move both locks' header, which is a single
-    // recompile to review, not five.
-    //
-    // Two entries of that file also appear in the compiled backend locks and are
-    // held equal to them by hand: `click` and `packaging`. `task deps:toolchain`
-    // installs into whatever environment is active, so a toolchain `packaging`
-    // ahead of `packaging==` in src/backend/requirements.txt leaves a backend
-    // virtualenv running an unlocked version of it. When this group's pull
-    // request moves either of the two, check them against the locks — the
-    // toolchain versions do not have to be the newest, only reproducible.
-    {
-      groupName: 'python lock toolchain',
-      matchManagers: [
-        'pip_requirements',
-      ],
-      matchFileNames: [
-        '.github/pip-tools-requirements.txt',
-      ],
-    },
-    // ── click held below 8.5 for the lock toolchain only (#1296) ─────────────
-    // click 8.5.0 stopped reporting an untouched boolean flag's `Option.default`
-    // as `False` (it is a sentinel now). pip-tools 7.6.1 rebuilds the
-    // `pip-compile …` line in each lock's header by skipping options whose value
-    // still equals their default, so that comparison stopped matching and
-    // `--no-index` appeared in the header of both backend locks — a flag that was
-    // never passed and that would make the recorded command not reproduce the
-    // lock if anyone ran it. Every backend pull request and `develop` itself went
-    // red on that one line.
-    //
-    // There is nothing to bump *to*: pip-tools 7.6.1 is the latest release, it
-    // declares `click>=8` with no upper bound, and it is affected. So the cap
-    // sits here rather than in the workflow, where it would age unwatched.
-    //
-    // Scoped to this ONE file on purpose. click is also a runtime dependency of
-    // the backend (via celery) and is pinned in src/backend/requirements.txt; a
-    // repository-wide cap would freeze that copy too and stop its security
-    // updates, which is a far larger cost than a stale build tool.
-    //
-    // Revisit when pip-tools ships a release that reads the parameter source
-    // instead of comparing against `Option.default`, then drop this rule and let
-    // click and pip-tools move together — pinning click forever is the other half
-    // of the reproducibility problem, not a resting state.
-    {
-      matchManagers: [
-        'pip_requirements',
-      ],
-      matchFileNames: [
-        '.github/pip-tools-requirements.txt',
-      ],
-      matchPackageNames: [
-        'click',
-      ],
-      allowedVersions: '<8.5',
     },
     {
       groupName: 'frontend eslint',
@@ -391,53 +297,69 @@
         '!typescript',
       ],
     },
+    // ── Third-party images: one pull request per image, whatever the file ────
+    // The same image is referenced from docker-compose*.yml (docker-compose
+    // manager), helm/kamerplanter/values*.yaml (helm-values), the Dockerfiles
+    // (dockerfile) and workflow `env:` values (the regex manager below). Until
+    // 2026-09-10 the groups here matched on `matchManagers`, so one upstream
+    // release became one pull request PER MANAGER — timescaledb 2.30.0 arrived
+    // as #1359 (compose) and #1369 (helm values) — and the two halves could be
+    // merged days apart, leaving CI and the dev cluster on different databases.
+    // Grouping on package identity alone puts every reference in one branch.
+    //
+    // `matchDatasources: ['docker']` on the base images is not decoration: the
+    // github-actions manager also extracts `python 3.14` (setup-python) and the
+    // asdf manager `node`, and without the datasource filter those would be
+    // pulled into the image group.
+    //
+    // No automerge. These are the databases the tests run against and the
+    // browser the E2E suite drives; a green run is necessary but the merge
+    // stays a decision.
     {
-      groupName: 'docker databases',
-      matchManagers: [
-        'docker-compose',
+      groupName: '{{depName}} image',
+      matchDatasources: [
+        'docker',
       ],
       matchPackageNames: [
+        'timescale/timescaledb',
         'arangodb',
         'valkey/valkey',
-        'timescale/timescaledb',
+        'ollama/ollama',
+        'nginxinc/nginx-unprivileged',
+        'python',
+        'node',
       ],
     },
+    // selenium/hub and selenium/node-chrome version independently (4.x vs the
+    // Chrome major) but must match each other at runtime, so a hub minor and a
+    // node "major" belong in the same pull request — #1367 and #1370 were the
+    // same upstream release split by `separateMajorMinor`.
     {
-      groupName: 'docker selenium',
-      matchManagers: [
-        'docker-compose',
+      groupName: 'selenium images',
+      matchDatasources: [
+        'docker',
       ],
       matchPackageNames: [
-        '/selenium/',
+        '/^selenium//',
       ],
-    },
-    {
-      groupName: 'helm charts',
-      matchManagers: [
-        'helmv3',
-      ],
-    },
-    {
-      groupName: 'nodejs',
-      matchManagers: [
-        'asdf',
-      ],
-      matchPackageNames: [
-        'nodejs',
-      ],
-    },
-    {
-      groupName: 'security pinned versions',
-      matchFileNames: [
-        '.github/renovate-pins.yaml',
-      ],
-      labels: [
-        'dependencies',
-        'security',
-      ],
+      separateMajorMinor: false,
     },
   ],
   customManagers: [
+    {
+      customType: 'regex',
+      description: 'Age the uv version pinned in [tool.uv].required-version and the build backend pinned in build-constraint-dependencies.',
+      managerFilePatterns: [
+        '/^src/backend/pyproject\\.toml$/',
+      ],
+      matchStrings: [
+        'required-version = "==(?<currentValue>[0-9][^"]*)"',
+        '"(?<depName>setuptools|wheel)==(?<currentValue>[0-9][^"]*)"',
+      ],
+      depNameTemplate: '{{#if depName}}{{depName}}{{else}}uv{{/if}}',
+      datasourceTemplate: 'pypi',
+      versioningTemplate: 'pep440',
+    },
     {
       customType: 'regex',
       description: 'Update pinned versions in .github/renovate-pins.yaml — read by security workflows.',
@@ -459,8 +381,8 @@
         '/^\\.github/workflows/[^/]+\\.ya?ml$/',
       ],
       matchStrings: [
-        // pip-style: 'pip-audit==2.10.1'
-        "'(?<depName>pip-audit|pip-licenses|pip-tools|pip)==(?<currentValue>[0-9][^']*)'",
+        // pip-style: 'pip-audit==2.10.1', 'uv==0.12.12'
+        "'(?<depName>pip-audit|pip-licenses|uv)==(?<currentValue>[0-9][^']*)'",
         // npx-style: @stoplight/spectral-cli@6.16.2
         'npx --yes (?<depName>@[^@\\s]+/[^@\\s]+)@(?<currentValue>[0-9]\\S*)',
       ],

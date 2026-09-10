@@ -30,7 +30,7 @@ Solutions to common technical problems when installing, operating, and using Kam
     | `AUTH_EXCEPTION` | Wrong ArangoDB password | Verify `ARANGODB_PASSWORD` in `.env` |
     | `redis.exceptions.ConnectionError` | Redis/Valkey not reachable | Restart Redis container |
     | `pydantic_settings.SettingsError` | Missing required environment variable | Set all required variables in `.env` |
-    | `Cannot import name 'X'` | Missing Python dependency | `pip install -r requirements.txt` inside container |
+    | `Cannot import name 'X'` | Missing Python dependency | `uv sync --locked` inside container |
 
 ??? question "ArangoDB container won't start"
     The most common cause is a data volume from an older ArangoDB version. Check:
