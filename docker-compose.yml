@@ -68,7 +68,7 @@ services:
 
   # ── Ollama (optional — local LLM inference for AI assistant) ──
   ollama:
-    image: ollama/ollama:latest@sha256:020e4134285e2ef4d8fd801234176de3b4faadc992a3eb06c8e66a2f9d4c4ba2
+    image: ollama/ollama:latest@sha256:684d8674b4315fa18f4f0e973a118ec2652ed96f67563277839985175858e0ba
     profiles: ["ollama"]
     environment:
       OLLAMA_MODELS: /models
