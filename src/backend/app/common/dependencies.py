@@ -261,6 +261,12 @@ def get_plant_instance_service() -> PlantInstanceService:
         propagation_service=get_propagation_service(),
         overwintering_materializer=get_overwintering_materializer(),
         overwintering_service=get_overwintering_profile_service(),
+        # #1335 — the resolvers for the caller-supplied catalogue references a plant
+        # carries (substrate / batch / species). Both are optional on the service so
+        # it stays constructible in pure-domain contexts; they are NOT optional in
+        # production, and an absence check reads this call to keep it that way.
+        substrate_service=get_substrate_service(),
+        species_service=get_species_service(),
     )
 
 

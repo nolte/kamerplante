@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING
 
 import structlog
@@ -44,6 +45,8 @@ from app.domain.services.propagation_service import PropagationService
 if TYPE_CHECKING:
     from app.domain.services.overwintering_materializer import OverwinteringMaterializer
     from app.domain.services.overwintering_profile_service import OverwinteringProfileService
+    from app.domain.services.species_service import SpeciesService
+    from app.domain.services.substrate_service import SubstrateService
 
 logger = structlog.get_logger()
 
@@ -64,6 +67,8 @@ class PlantInstanceService:
         propagation_service: PropagationService | None = None,
         overwintering_materializer: OverwinteringMaterializer | None = None,
         overwintering_service: OverwinteringProfileService | None = None,
+        substrate_service: SubstrateService | None = None,
+        species_service: SpeciesService | None = None,
     ) -> None:
         self._repo = plant_repo
         self._site_repo = site_repo
@@ -93,6 +98,17 @@ class PlantInstanceService:
         # is removed. Injected to avoid a service→service import cycle; no-op
         # when unwired (keeps the service usable in photo-less contexts).
         self._photo_cleanup = photo_cleanup
+        # #1335 — the resolvers for the caller-supplied catalogue references a plant
+        # carries. Optional, like every other collaborator here, so the service stays
+        # constructible in pure-domain contexts; the production wiring supplies both
+        # and an absence check pins that, so the escape cannot become the default.
+        self._substrate_service = substrate_service
+        self._species_service = species_service
+        # One resolver per catalogue reference, bound once. A mapping rather than the
+        # ``if/elif`` chain this started as: that chain had no ``else``, so a field
+        # it did not name fell through unchecked and looked exactly like a field that
+        # passed. A missing entry here is reported where the skip happens.
+        self._reference_resolvers = self._build_reference_resolvers(substrate_service, species_service)
 
     def list_plants(self, offset: int = 0, limit: int = 50, tenant_key: str = "") -> tuple[list[PlantInstance], int]:
         return self._repo.get_all(offset, limit, tenant_key=tenant_key)
@@ -125,10 +141,311 @@ class PlantInstanceService:
             raise NotFoundError("Site", plant.site_key)
         verify_tenant_ownership(site, plant.tenant_key, "Site")
 
+    # ── Caller-supplied reference resolution (#1335) ──────────────────────
+
+    #: The **catalogue** references a plant carries — each resolvable on its own,
+    #: because each has exactly one owner and nothing relates them to each other.
+    #:
+    #: This tuple is what :meth:`_resolve_references` iterates. The resolver for
+    #: each is looked up in :attr:`_reference_resolvers`, which holds an entry only
+    #: for a collaborator that was actually wired — a field whose resolver is
+    #: missing is **logged at the skip**, so "unwired" is never indistinguishable
+    #: from "checked".
+    #:
+    #: ``cultivar_key`` is absent because it is resolved one layer down, by
+    #: :attr:`ArangoPlantInstanceRepository._owned_reference_fields` (#1090).
+    _CATALOGUE_REFERENCE_FIELDS: tuple[str, ...] = (
+        "species_key",
+        "substrate_batch_key",
+        "substrate_key",
+    )
+
+    #: The **placement** references, which are *not* independent: a slot lies in a
+    #: location and a location lies in a site. They are resolved as one chain by
+    #: :meth:`_resolve_placement`, and the chain is re-run whenever any of the
+    #: three moved — see there for why per-field changed-only is wrong for them.
+    #:
+    #: ``site_key`` appears here as a chain *anchor* only; its ownership check is
+    #: :meth:`_verify_site_ownership` (#719), which runs unconditionally on both
+    #: write paths and is not duplicated below.
+    _PLACEMENT_FIELDS: tuple[str, ...] = (
+        "site_key",
+        "location_key",
+        "slot_key",
+    )
+
+    def _build_reference_resolvers(
+        self,
+        substrate_service: SubstrateService | None,
+        species_service: SpeciesService | None,
+    ) -> dict[str, Callable[[str, str], None]]:
+        """Bind one resolver per catalogue reference, for the collaborators present.
+
+        A ``dict`` rather than the ``if/elif`` chain this started as: that chain had
+        no ``else``, so a field name that matched no branch — a renamed model field,
+        a typo, a field added to the list and not to the chain — was silently not
+        checked while every test kept passing. Here a field either has a resolver or
+        it is missing from the mapping, and
+        ``test_every_dispatched_reference_field_exists_on_the_plant_model`` asserts
+        both directions against ``PlantInstance.model_fields``.
+
+        A missing collaborator is **logged**, not swallowed — but at the point where
+        a reference actually goes unchecked, not here at construction. The escape
+        exists so the service stays constructible in pure-domain contexts (tests,
+        migrations), and an unwired service that is never asked to resolve anything
+        has skipped nothing. What must leave a trace is the moment a supplied key is
+        not checked, which is the same place and the same shape as
+        ``owned_reference_check_skipped_tenantless_row``.
+        """
+        resolvers: dict[str, Callable[[str, str], None]] = {}
+        if species_service is not None:
+            resolvers["species_key"] = partial(self._resolve_species_key, species_service)
+        if substrate_service is not None:
+            resolvers["substrate_batch_key"] = partial(self._resolve_substrate_batch_key, substrate_service)
+            resolvers["substrate_key"] = partial(self._resolve_substrate_key, substrate_service)
+        return resolvers
+
+    def _resolve_references(self, plant: PlantInstance, *, previous: PlantInstance | None = None) -> None:
+        """Resolve the caller-supplied foreign keys on ``plant`` before it is stored (#1335).
+
+        ``POST``/``PUT``/``PATCH /t/{slug}/plant-instances`` assign the body's keys
+        onto the row verbatim, so before this existed a caller could point a plant at
+        a substrate / location / slot / batch / species that does not exist or belongs
+        to another tenant, and the amendment gate #1332 shipped had no REST seam to
+        attach to.
+
+        **Here rather than in the router.** The router would have to repeat it in
+        three handlers and the fourth caller would not get it — the #948 shape this
+        repository keeps paying for. There is one seam per direction
+        (:meth:`create_plant` / :meth:`update_plant`), which covers the REST routes,
+        the MCP tools and the onboarding wizard.
+
+        **It is not, however, every write path**, and saying so would be the kind of
+        claim #1349's review was filed over. Two in-repository paths write a
+        ``PlantInstance`` without passing through either seam:
+
+        * :meth:`PlantingRunService.create_plants` builds each batch instance and
+          calls ``self._plant_repo.create(plant)`` directly — and the run's own
+          ``location_key``, which decides the slots those instances are placed in,
+          is never verified against the run's tenant either. Pre-existing and
+          deliberately **not** fixed here (issue #1372).
+        * :meth:`_spawn_clonal_pup` in this very class calls ``self._repo.create(pup)``
+          for the D10 pup. Its references are copied from the mother, which was
+          resolved when *it* was written, so nothing caller-supplied reaches it.
+
+        A third path resolves, but with the wrong predicate: the MCP
+        ``SetPlantLocation`` tool's ``_verify_targets`` calls
+        ``SiteService.get_location(key, tenant_key=…)``, which anchors on the row's
+        own ``tenant_key`` and therefore refuses the tenant's *own* locations
+        (#1352) — the over-rejecting direction, and the reason this method anchors
+        on the parent :class:`~app.domain.models.site.Site` instead.
+
+        **What each key is anchored on is not uniform, and that is the difficulty:**
+
+        * ``location_key`` / ``slot_key`` carry **no usable** ``tenant_key``.
+          ``LocationCreate`` has no such field and ``create_location`` builds
+          ``Location(**body.model_dump())``, so every stored row is ``""`` — and a
+          full-replace ``PUT`` even wipes what the one-off ``v0004`` backfill wrote.
+          A guard written as ``location.tenant_key == tenant_key`` would refuse
+          *every* location: an over-rejecting guard that looks like a security fix
+          and loses the feature (#706, #927). They are anchored on the parent
+          :class:`~app.domain.models.site.Site`, a slot through its location — and
+          on each other, see :meth:`_resolve_placement`.
+        * ``species_key`` is a hybrid catalogue — own rows, the global seeds
+          (``tenant_key == ""``) and, since #1092, an explicitly granted species. The
+          predicate used is :meth:`SpeciesService.get_species` itself, not a copy of
+          its three arms.
+        * ``substrate_batch_key`` is strictly owned, no global arm (#1195).
+        * ``substrate_key`` goes through :meth:`SubstrateService.get_growing_medium`,
+          the single predicate #1332 introduced: it resolves under the caller's scope
+          **first** and only then refuses an amendment (#1175). That order is what
+          keeps the 422 from becoming a cross-tenant existence oracle.
+
+        Every refusal is a :class:`NotFoundError` (404) except two, which are
+        :class:`ValidationError` (422): an amendment used as a growing medium, and a
+        placement chain that does not hold together. 422 is honest in both cases and
+        only there — every object involved is one the caller can already read, so the
+        answer discloses nothing it could not get from the catalogue directly. That
+        is the #970 boundary convention: a well-formed request the domain rejects.
+
+        ``previous`` makes the update half **changed-only**, for the reasons
+        :meth:`BaseArangoRepository._verify_changed_owned_references` gives (#1090
+        C-9): an untouched reference whose target was deleted since, or reclassified
+        as an amendment after the plant was potted in it, is an integrity fact and not
+        a disclosure route — re-verifying it would make the row uneditable through
+        every internal path that rewrites the full model (phase transitions, removal,
+        planting-run materialisation).
+
+        It is *not*, however, a claim that a stale reference stays hidden. A plant
+        that already carries a foreign ``species_key`` — written before this guard
+        existed — is disclosed on **every** ``GET``: ``_to_response`` calls
+        ``resolve_species``, which reads the species repository **unscoped**
+        (``get_by_key``) to denormalise the label. Rows predating the guard are
+        exempt by the changed-only rule and no repair migration ships with #1349;
+        the exposure is pre-existing and unchanged by it, not absent.
+
+        Only ``None`` skips a field. An empty string does **not**: ``""`` is a value
+        the caller chose, it resolves to nothing, and reading it as "no reference
+        supplied" is what let ``POST {"species_key": ""}`` answer 201. The request
+        schemas reject it at the boundary with 422 (``min_length=1``); this half
+        catches the same value arriving from any other caller.
+
+        Skipped entirely for a plant with no ``tenant_key`` (seeds, migrations, light
+        mode): there is nothing to anchor against, matching the ``if tenant_key`` gate
+        on :meth:`get_plant` and :meth:`_verify_site_ownership`.
+        """
+        if not plant.tenant_key:
+            return
+        unchecked: list[str] = []
+        # Driven by the declared field tuple, not by the resolver map: a field with
+        # no resolver must be *reported*, and iterating the map would make it
+        # invisible instead. No ``getattr`` default either — a field renamed on the
+        # model raises here rather than quietly resolving to ``None``.
+        for field in self._CATALOGUE_REFERENCE_FIELDS:
+            value = getattr(plant, field)
+            if value is None:
+                continue
+            if previous is not None and value == getattr(previous, field):
+                continue
+            resolve = self._reference_resolvers.get(field)
+            if resolve is None:
+                unchecked.append(field)
+                continue
+            resolve(value, plant.tenant_key)
+        if unchecked:
+            logger.warning(
+                "reference_resolver_unwired",
+                fields=unchecked,
+                plant_key=plant.key,
+                tenant_key=plant.tenant_key,
+            )
+        if previous is None or any(
+            getattr(plant, field) != getattr(previous, field) for field in self._PLACEMENT_FIELDS
+        ):
+            self._resolve_placement(plant)
+
+    def _resolve_placement(self, plant: PlantInstance) -> None:
+        """Resolve ``site_key`` → ``location_key`` → ``slot_key`` as one chain.
+
+        Resolving each of the three on its own parent's tenant — which is what this
+        did first — proves only that the caller owns three objects. It does not
+        prove they describe a place. Measured on the pre-chain code, with two sites
+        of the *same* tenant::
+
+            POST {"site_key": "S1", "location_key": "L2 (under S2)",
+                  "slot_key": "SL2 (in L2)"}            -> 201
+
+        The stored plant is then in a location that is not in its site. Every
+        location-scoped read (rotation history, companion neighbourhood, the run's
+        slot list, the frost-exposure resolver, which reads *the plant's location*
+        and *the plant's site*) answers against a place that does not exist.
+
+        **Chain rules.** A supplied ``slot_key`` must name a slot whose location is
+        the plant's ``location_key``; a supplied ``location_key`` must name a
+        location under the plant's ``site_key``. A mismatch is a
+        :class:`ValidationError` (422): all three documents are the caller's own, so
+        naming the inconsistency discloses nothing, and a 404 would be actively
+        misleading — the object it would deny does exist and the caller can read it.
+        Absent / foreign targets keep answering 404, unchanged.
+
+        **A slot without a location derives one.** When ``slot_key`` is set and
+        ``location_key`` is not, the slot's own ``location_key`` is written onto the
+        plant rather than the request being refused. A slot lies in exactly one
+        location, so there is nothing for the caller to disagree with, and the value
+        used is the slot's own parent — never an assertion by the caller. Refusing
+        instead would break ``PATCH {"slot_key": …}`` on a plant that has no location
+        yet, which is the ordinary way a plant is first placed. ``site_key`` is
+        deliberately **not** derived the same way: it is nullable by design (a plant
+        may be placed without one) and it has its own guard, so filling it here would
+        change stored data for no check that is not already made.
+
+        **Whole-chain, not per-field.** A per-field changed-only rule skips an
+        unchanged ``location_key`` — so moving only ``site_key`` used to leave the
+        plant in a location belonging to the site it just left. The caller re-runs
+        this whenever *any* of the three moved.
+        """
+        tenant_key = plant.tenant_key
+        slot_location: Location | None = None
+        if plant.slot_key is not None:
+            slot = self._site_repo.get_slot_by_key(plant.slot_key)
+            slot_location = (
+                self._site_repo.get_location_by_key(slot.location_key) if slot and slot.location_key else None
+            )
+            if slot is None or slot_location is None:
+                raise NotFoundError("Slot", plant.slot_key)
+            self._require_owned_site(slot_location.site_key, tenant_key, "Slot", plant.slot_key)
+            if plant.location_key and plant.location_key != slot.location_key:
+                raise ValidationError(
+                    f"Slot '{plant.slot_key}' is not in location '{plant.location_key}'.",
+                    details=[
+                        {
+                            "field": "slot_key",
+                            "reason": "The slot belongs to a different location than the one given for this plant.",
+                            "code": "PLACEMENT_CHAIN_MISMATCH",
+                        }
+                    ],
+                )
+            if not plant.location_key:
+                plant.location_key = slot.location_key
+        if plant.location_key is not None:
+            # Reuse the document the slot hop already read, when it is the same one —
+            # the create path used to read the location up to three times per request.
+            location = (
+                slot_location
+                if slot_location is not None and slot_location.key == plant.location_key
+                else self._site_repo.get_location_by_key(plant.location_key)
+            )
+            if location is None:
+                raise NotFoundError("Location", plant.location_key)
+            self._require_owned_site(location.site_key, tenant_key, "Location", plant.location_key)
+            if plant.site_key and location.site_key != plant.site_key:
+                raise ValidationError(
+                    f"Location '{plant.location_key}' is not part of site '{plant.site_key}'.",
+                    details=[
+                        {
+                            "field": "location_key",
+                            "reason": "The location belongs to a different site than the one given for this plant.",
+                            "code": "PLACEMENT_CHAIN_MISMATCH",
+                        }
+                    ],
+                )
+
+    def _resolve_species_key(self, species_service: SpeciesService, value: str, tenant_key: str) -> None:
+        """Own rows + the global seeds + an explicit #1092 grant — the service's own
+        predicate, not a copy of its three arms."""
+        species_service.get_species(value, tenant_key=tenant_key)
+
+    def _resolve_substrate_batch_key(self, substrate_service: SubstrateService, value: str, tenant_key: str) -> None:
+        """Strict ownership, no global arm (#1195)."""
+        substrate_service.get_batch(value, tenant_key=tenant_key)
+
+    def _resolve_substrate_key(self, substrate_service: SubstrateService, value: str, tenant_key: str) -> None:
+        """``get_growing_medium``, not ``get_substrate``: this is the medium the plant
+        grows *in*, and a soil amendment is not one (#1175). The predicate scopes
+        before it classifies, so a foreign amendment answers 404 and not 422."""
+        substrate_service.get_growing_medium(value, tenant_key=tenant_key)
+
+    def _require_owned_site(self, site_key: str, tenant_key: str, entity_name: str, entity_key: str) -> None:
+        """Anchor a row that carries no usable ``tenant_key`` on its parent site.
+
+        The raised :class:`NotFoundError` names the **referenced entity**, not the
+        site behind it: an absent location and a location under a foreign site must
+        answer identically, or the difference between the two messages is itself the
+        oracle the 404 exists to prevent.
+        """
+        site = self._site_repo.get_site_by_key(site_key) if site_key else None
+        if site is None or site.tenant_key != tenant_key:
+            raise NotFoundError(entity_name, entity_key)
+
     def create_plant(self, plant: PlantInstance, skip_validation: bool = False) -> PlantInstance:
         # SEC (#719): reject a foreign/unknown site_key before any write, mirroring the
         # location create path — a client must not create a plant on another tenant's site.
         self._verify_site_ownership(plant)
+        # #1335: …and every other caller-supplied foreign key with it. Before the
+        # rotation/companion engines below, deliberately: those read the slot's
+        # neighbourhood tenant-scoped, so a foreign slot yields no findings and
+        # *passes* — the reference has to be refused before it is interpreted.
+        self._resolve_references(plant)
 
         if not skip_validation and plant.slot_key:
             # Both engines read the slot's neighbourhood/history, which is
@@ -469,6 +786,11 @@ class PlantInstanceService:
         # locations. A foreign/unknown site raises NotFoundError; the write below and
         # the overwintering sync are never reached.
         self._verify_site_ownership(plant)
+        # #1335: resolve the references this update actually **re-points**. The
+        # stored copy read above is the comparison basis, so an untouched reference
+        # is never dialled — see :meth:`_resolve_references` for why changed-only is
+        # the correct semantics here and not merely the cheap one.
+        self._resolve_references(plant, previous=existing)
         updated = self._repo.update(key, plant)
         self._sync_overwintering_on_move(updated, old_site_key)
         return updated

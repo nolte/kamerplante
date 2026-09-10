@@ -1,22 +1,43 @@
 from datetime import date, datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
 from app.common.enums import CycleType, SubstrateType, TerminationCause, TerminationType
 
+#: A caller-supplied document key. ``min_length=1`` because ``""`` is not a key:
+#: it resolves to nothing, and before this constraint existed it was *also* not
+#: resolved — ``PlantInstanceService._resolve_references`` read ``if not value``
+#: and treated an empty string as "no reference supplied". Measured on the
+#: pre-constraint route: ``POST {"species_key": ""}`` answered **201** and stored
+#: a plant whose species does not exist; ``PUT`` stripped an existing plant's
+#: species the same way.
+#:
+#: Refusing it here rather than in the service is deliberate — ``""`` is
+#: malformed input, not a reference to something the caller may not see, so the
+#: honest answer is a 422 naming the field and not the 404 the service would
+#: raise. The service still resolves a stored ``""`` (other callers exist), so
+#: the two halves overlap rather than depend on each other.
+ReferenceKey = Annotated[str, Field(min_length=1)]
+
+#: The nullable form. The constraint sits on the ``str`` arm of the union, never
+#: on the union itself: ``None`` must stay accepted, because an explicit ``null``
+#: is how ``PATCH`` clears a reference (#1098) and omission is how ``PUT`` does.
+OptionalReferenceKey = ReferenceKey | None
+
 
 class PlantCreate(BaseModel):
     instance_id: str
-    species_key: str
-    cultivar_key: str | None = None
-    site_key: str | None = None
-    location_key: str | None = None
-    slot_key: str | None = None
-    substrate_batch_key: str | None = None
-    substrate_key: str | None = None
+    species_key: ReferenceKey
+    cultivar_key: OptionalReferenceKey = None
+    site_key: OptionalReferenceKey = None
+    location_key: OptionalReferenceKey = None
+    slot_key: OptionalReferenceKey = None
+    substrate_batch_key: OptionalReferenceKey = None
+    substrate_key: OptionalReferenceKey = None
     plant_name: str | None = None
     planted_on: date
-    current_phase_key: str | None = None
+    current_phase_key: OptionalReferenceKey = None
     container_volume_liters: float | None = Field(default=None, ge=0.1, le=500)
     substrate_type_override: SubstrateType | None = None
     # ADR-006 E1 — per-instance cultivation cycle override; None = "same as the species".
@@ -54,13 +75,13 @@ class PlantPatch(BaseModel):
     because a silently ignored field reads to the caller as success.
     """
 
-    species_key: str | None = None
-    cultivar_key: str | None = None
-    site_key: str | None = None
-    location_key: str | None = None
-    slot_key: str | None = None
-    substrate_batch_key: str | None = None
-    substrate_key: str | None = None
+    species_key: OptionalReferenceKey = None
+    cultivar_key: OptionalReferenceKey = None
+    site_key: OptionalReferenceKey = None
+    location_key: OptionalReferenceKey = None
+    slot_key: OptionalReferenceKey = None
+    substrate_batch_key: OptionalReferenceKey = None
+    substrate_key: OptionalReferenceKey = None
     plant_name: str | None = None
     planted_on: date | None = None
     container_volume_liters: float | None = Field(default=None, ge=0.1, le=500)

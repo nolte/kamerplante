@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.common.enums import FrostTolerance, HardinessRating, SiteType, WinterAction
-from app.common.exceptions import NotFoundError
+from app.common.exceptions import NotFoundError, ValidationError
 from app.domain.interfaces.overwintering_profile_repository import IOverwinteringProfileRepository
 from app.domain.models.overwintering_profile import OverwinteringProfile
 from app.domain.models.plant_instance import PlantInstance
@@ -512,25 +512,54 @@ class TestLocationFrostExposedOverride:
         profile = ow_repo.get_profile_by_plant_key(created.key)
         assert profile is not None, "Profile must be materialised (site is outdoor, fallback)"
 
-    def test_foreign_location_ignored_falls_back_to_site_type(self) -> None:
-        """Guard safety: location.site_key != plant.site_key is ignored.
+    def test_a_location_from_another_site_is_now_refused_on_the_write_path(self) -> None:
+        """The state this class's fallback guards against is no longer *creatable*.
 
-        Scenario: A location is intentionally or accidentally pointed at a plant
-        on a different site. The guard prevents the foreign location from affecting
-        the frost exposure (fails safe: inherits from site type).
+        ``location.site_key != plant.site_key`` used to be reachable through
+        ``create_plant``: each placement key was resolved on its own parent's tenant
+        in isolation, so two objects the caller legitimately owns could describe a
+        plant in a location that is not in its site (#1349 review, finding 2). The
+        chain check refuses it now — 422, because both documents are the caller's own.
         """
         sites = {
             "site-out": _site("site-out", SiteType.OUTDOOR),
             "site-in": _site("site-in", SiteType.INDOOR),
         }
+        locations = {"loc-foreign": _location("loc-foreign", site_key="site-in", frost_exposed=False)}
+        service, _ow_repo, _plant_repo = _real_service(sites, locations=locations)
+
+        with pytest.raises(ValidationError) as exc:
+            service.create_plant(_plant("site-out", key="plant-1", location_key="loc-foreign"))
+
+        assert exc.value.status_code == 422
+
+    def test_foreign_location_ignored_falls_back_to_site_type(self) -> None:
+        """Guard safety: ``location.site_key != plant.site_key`` is ignored.
+
+        Scenario: a stored row — written before the chain check existed, or by an
+        internal caller — points a plant on one site at a location under another.
+        ``resolve_frost_exposure`` must ignore that location and fall back to the
+        site type rather than trusting it.
+
+        Reached here through a **tenantless** plant, which is the path that still
+        produces such a row: seeds, migrations and light-mode callers skip reference
+        resolution entirely (there is nothing to anchor against), exactly as
+        ``get_plant`` and ``_verify_site_ownership`` already skip for them. Going
+        through ``create_plant`` with a tenant would now be refused by the chain
+        check — see the test above — and asserting the fallback on a state the write
+        path rejects would be asserting it on nothing.
+        """
+        sites = {
+            "site-out": _site("site-out", SiteType.OUTDOOR, tenant=""),
+            "site-in": _site("site-in", SiteType.INDOOR, tenant=""),
+        }
         locations = {
-            # This location belongs to site-in, but plant is on site-out.
+            # This location belongs to site-in, but the plant is on site-out.
             "loc-foreign": _location("loc-foreign", site_key="site-in", frost_exposed=False),
         }
         service, ow_repo, plant_repo = _real_service(sites, locations=locations)
 
-        # Plant on outdoor site pointing at a location from an indoor site.
-        plant = _plant("site-out", key="plant-1", location_key="loc-foreign")
+        plant = _plant("site-out", key="plant-1", location_key="loc-foreign", tenant="")
         created = service.create_plant(plant)
 
         # The foreign location must be ignored; profile is materialised due to site type.

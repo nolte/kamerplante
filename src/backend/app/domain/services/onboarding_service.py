@@ -7,7 +7,7 @@ import structlog
 
 from app.common.datetimes import today_utc
 from app.common.enums import SiteType
-from app.common.exceptions import DuplicateError, ValidationError
+from app.common.exceptions import DuplicateError, NotFoundError, ValidationError
 from app.data_access.arango.base_repository import BaseArangoRepository
 from app.domain.engines.onboarding_engine import OnboardingEngine
 from app.domain.models.onboarding import OnboardingState, PlantConfig
@@ -112,8 +112,10 @@ class OnboardingService:
             site_key = self._create_site(site_name, site_type, tenant_key)
             created_entities["sites"] = [site_key]
 
-        # Create plant instances from plant_configs or favorite_species
-        plant_keys = self._create_plants(
+        # Create plant instances from plant_configs or favorite_species. A plant
+        # whose species does not resolve is skipped, not silently dropped — the
+        # keys and reasons travel back to the caller on the response.
+        plant_keys, skipped_plants = self._create_plants(
             configs=configs,
             favorite_species_keys=favorite_species_keys or [],
             site_key=site_key,
@@ -174,6 +176,9 @@ class OnboardingService:
         return {
             "status": "completed",
             "created_entities": created_entities,
+            # Always present, empty on the happy path: a caller that has to check
+            # whether the key exists before reading it will eventually not check.
+            "skipped": skipped_plants,
         }
 
     def _create_site(self, site_name: str, site_type: str, tenant_key: str) -> str:
@@ -202,12 +207,36 @@ class OnboardingService:
         favorite_species_keys: list[str],
         site_key: str | None,
         tenant_key: str,
-    ) -> list[str]:
-        """Create plant instances from configs or favorite species."""
+    ) -> tuple[list[str], list[dict[str, str]]]:
+        """Create plant instances from configs or favorite species.
+
+        Returns the keys created **and** the plants that were not, with the reason.
+
+        Both halves are load-bearing. A species the caller names may not resolve —
+        a stale favourite, a species deleted since, a kit entry pointing at a row
+        another tenant owns. Refusing the whole wizard over one of them would be
+        wrong: onboarding is the user's first interaction, and the site, the
+        preferences and the plants that *did* resolve are all fine.
+
+        But so is the previous behaviour, which caught ``Exception``, wrote a
+        server-side warning and returned as if nothing had happened. Until #1335 it
+        was survivable — ``create_plant`` accepted a ghost ``species_key`` and
+        produced a plant with ``current_phase_key = None`` (the documented "never
+        refuse a record over a master-data gap" policy, #1006), which the user could
+        see and repair. Now ``_resolve_references`` runs *before* the
+        ``skip_validation`` gate and raises :class:`NotFoundError`, so the same
+        handler turns a missing species into a plant that was never created and never
+        mentioned: ``200 completed`` with fewer plants than the user asked for.
+
+        So: skip the plant, and say which one and why. The caller surfaces this as
+        ``skipped`` on the completion response. Silently is the one option that is
+        not available.
+        """
         from app.common.dependencies import get_plant_instance_service
 
         plant_service = get_plant_instance_service()
         created_keys: list[str] = []
+        skipped: list[dict[str, str]] = []
         # ``planted_on`` is a persisted domain date that plant age, phase
         # progress and GDD accumulation are computed from — all against UTC
         # timestamps, so the seed date is UTC (§12a).
@@ -231,18 +260,46 @@ class OnboardingService:
                 )
                 try:
                     created = plant_service.create_plant(plant, skip_validation=True)
-                    if created.key:
-                        created_keys.append(created.key)
-                except Exception:
+                except NotFoundError as exc:
+                    # The expected refusal: the species (or another reference the
+                    # wizard carries) does not resolve under this tenant. Named
+                    # separately from the catch-all below because it is the one the
+                    # user can act on — the message says which key was not found.
+                    logger.warning(
+                        "onboarding_plant_skipped_unresolvable_reference",
+                        species_key=species_key,
+                        instance_id=instance_id,
+                        reason=exc.message,
+                    )
+                    skipped.append({"entity_type": "plant_instance", "key": species_key, "reason": exc.message})
+                    continue
+                except Exception:  # noqa: BLE001 — one bad plant must not end the wizard
+                    # Everything else: still reported, but with a fixed reason. The
+                    # exception text of an unexpected failure is a storage/driver
+                    # message, and putting it in an HTTP response is the leak the
+                    # error contract exists to prevent. The detail stays in the log.
                     logger.warning(
                         "onboarding_plant_create_failed",
                         species_key=species_key,
+                        instance_id=instance_id,
                         exc_info=True,
                     )
+                    skipped.append(
+                        {
+                            "entity_type": "plant_instance",
+                            "key": species_key,
+                            "reason": "The plant could not be created.",
+                        }
+                    )
+                    continue
+                if created.key:
+                    created_keys.append(created.key)
 
         if created_keys:
             logger.info("onboarding_plants_created", count=len(created_keys))
-        return created_keys
+        if skipped:
+            logger.warning("onboarding_plants_skipped", count=len(skipped))
+        return created_keys, skipped
 
     def ensure_onboarding_state_for_user(
         self,

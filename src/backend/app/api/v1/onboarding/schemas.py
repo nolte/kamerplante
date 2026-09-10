@@ -60,10 +60,30 @@ class OnboardingProgressUpdate(BaseModel):
     smart_home_enabled: bool | None = None
 
 
+class OnboardingSkippedEntity(BaseModel):
+    """An entity the wizard could not provision, and why (#1335 review, finding 3).
+
+    The wizard does not fail as a whole over one unresolvable reference — a stale
+    favourite or a species deleted since must not cost the user the site, the
+    preferences and the plants that did resolve. It must, however, *say* that it
+    skipped something: answering ``200 completed`` with fewer plants than were
+    asked for, and only a server-side log line, is a silent data loss the user
+    cannot see or act on.
+    """
+
+    entity_type: str = Field(description="Kind of entity that was skipped (e.g. ``plant_instance``).")
+    key: str = Field(description="The reference that could not be resolved (e.g. the species key).")
+    reason: str = Field(description="Why it was skipped, in the words of the refusal itself.")
+
+
 class OnboardingCompleteResponse(BaseModel):
     """Outcome of finishing the onboarding wizard."""
 
     status: str = Field(description="Completion status marker (always ``completed``).")
     created_entities: dict[str, list[str]] = Field(
         description="Keys of the entities created by the wizard, grouped by entity type.",
+    )
+    skipped: list[OnboardingSkippedEntity] = Field(
+        default_factory=list,
+        description="Entities the wizard could not provision, with the reason. Empty on the happy path.",
     )

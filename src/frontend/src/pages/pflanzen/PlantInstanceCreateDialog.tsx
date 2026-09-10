@@ -383,6 +383,9 @@ export default function PlantInstanceCreateDialog({
         : (selectedSubstrate?.type ?? null);
       const result = await plantApi.createPlantInstance({
         ...rest,
+        // See PlantInstanceDetailPage: the "—" option is value '', and '' is not
+        // a key — the API refuses it with 422. null is how this API says "none".
+        cultivar_key: rest.cultivar_key || null,
         location_key: rest.location_key || null,
         slot_key: rest.slot_key || null,
         substrate_key: substrateKey,
