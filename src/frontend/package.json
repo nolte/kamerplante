@@ -60,7 +60,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "globals": "^17.4.0",
     "jsdom": "^29.0.1",
-    "knip": "6.34.0",
+    "knip": "6.35.1",
     "msw": "^2.12.14",
     "prettier": "^3.8.1",
     "rollup-plugin-visualizer": "^7.0.0",
