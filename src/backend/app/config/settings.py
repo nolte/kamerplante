@@ -305,9 +305,6 @@ class Settings(BaseSettings):
     smtp_from_email: str = "noreply@kamerplanter.example"
     smtp_use_tls: bool = True
 
-    # File uploads
-    upload_dir: str = "/data/uploads/tasks"
-
     # Home Assistant (optional — for sensor live-query)
     ha_url: str = ""  # e.g. "http://homeassistant.local:8123"
     ha_access_token: str = ""  # Long-Lived Access Token

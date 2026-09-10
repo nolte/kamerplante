@@ -443,14 +443,6 @@ Der Wert wird vor der Ausgabe gegen `^[0-9a-f]{7,40}$` geprüft (nach dem Abschn
 
 ---
 
-## Uploads
-
-| Variable | Standard | Pflicht | Beschreibung |
-|----------|---------|---------|-------------|
-| `UPLOAD_DIR` | `uploads/tasks` | Nein | Verzeichnis für Datei-Uploads (relativ zum Backend-Arbeitsverzeichnis) |
-
----
-
 ## Verschachtelte Konfiguration (GBIF)
 
 GBIF-Einstellungen können über den Unterstrich-Doppelpunkt-Delimiter verschachtelt werden:

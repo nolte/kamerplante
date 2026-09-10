@@ -443,14 +443,6 @@ Before it is reported, the value is checked against `^[0-9a-f]{7,40}$` (after st
 
 ---
 
-## Uploads
-
-| Variable | Default | Required | Description |
-|----------|---------|---------|-------------|
-| `UPLOAD_DIR` | `uploads/tasks` | No | Directory for file uploads (relative to backend working directory) |
-
----
-
 ## Nested Configuration (GBIF)
 
 GBIF settings can be passed using the double-underscore delimiter for nesting:

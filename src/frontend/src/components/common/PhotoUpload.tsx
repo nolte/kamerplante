@@ -9,6 +9,7 @@ import AddAPhotoIcon from '@mui/icons-material/AddAPhoto';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { useNotification } from '@/hooks/useNotification';
 import { useApiError } from '@/hooks/useApiError';
+import AuthImage from '@/components/common/AuthImage';
 import * as taskApi from '@/api/endpoints/tasks';
 
 interface Props {
@@ -34,7 +35,7 @@ export default function PhotoUpload({ taskKey, photoRefs, onChange, disabled }: 
       try {
         for (const file of Array.from(files)) {
           const result = await taskApi.uploadTaskPhoto(taskKey, file);
-          newRefs.push(result.url);
+          newRefs.push(result.uri);
         }
         onChange(newRefs);
         notification.success(t('pages.tasks.photoUploaded'));
@@ -90,11 +91,10 @@ export default function PhotoUpload({ taskKey, photoRefs, onChange, disabled }: 
                 borderColor: 'divider',
               }}
             >
-              <Box
-                component="img"
-                src={ref}
-                alt={`Photo ${i + 1}`}
-                sx={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              <AuthImage
+                uri={ref}
+                alt={t('pages.tasks.photoAlt', { index: i + 1 })}
+                data-testid={`photo-preview-${i}`}
               />
               <IconButton
                 size="small"

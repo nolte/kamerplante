@@ -97,6 +97,7 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     {"name": "substrates", "description": "Substrate master data (REQ-019)."},
     {"name": "succession-plans", "description": "Succession sowing plans (REQ-028)."},
     {"name": "tanks", "description": "Nutrient and water tank management (REQ-014)."},
+    {"name": "task-photos", "description": "Task photos, on the attachment fundament (REQ-006, NFR-013)."},
     {"name": "tasks", "description": "Task planning and completion (REQ-006)."},
     {"name": "tenant-scoped", "description": "Tenant-scoped resource endpoints under /t/{tenant_slug} (REQ-024)."},
     {"name": "tenants", "description": "Tenant and membership management (REQ-024)."},

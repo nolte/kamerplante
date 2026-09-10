@@ -221,16 +221,28 @@ describe('tasks endpoints — tasks CRUD', () => {
     expect(client.delete).toHaveBeenCalledWith('/tasks/tk1');
   });
 
-  it('uploadTaskPhoto posts FormData with multipart header', async () => {
-    client.post.mockResolvedValue({ data: { url: '/p.jpg' } });
+  it('uploadTaskPhoto posts FormData with multipart header and returns the attachment', async () => {
+    // The response is the NFR-013 attachment shape since #1339, not the
+    // `{ url, filename, size_bytes }` of the unauthenticated static file this
+    // endpoint was originally imagined to write — a file no route ever wrote.
+    const attachment = {
+      attachment_id: 'att-1',
+      uri: '/api/v1/t/mein-garten/attachments/att-1',
+      thumbnail_uris: null,
+      mime_type: 'image/jpeg',
+      byte_size: 1,
+      original_filename: 'p.jpg',
+    };
+    client.post.mockResolvedValue({ data: attachment });
     const file = new File(['x'], 'p.jpg', { type: 'image/jpeg' });
-    await tasks.uploadTaskPhoto('tk1', file);
+    const result = await tasks.uploadTaskPhoto('tk1', file);
     expect(client.post).toHaveBeenCalledTimes(1);
     const [url, body, opts] = client.post.mock.calls[0];
     expect(url).toBe('/tasks/tk1/photos');
     expect(body).toBeInstanceOf(FormData);
     expect((body as FormData).get('file')).toBe(file);
     expect(opts).toEqual({ headers: { 'Content-Type': 'multipart/form-data' } });
+    expect(result.uri).toBe('/api/v1/t/mein-garten/attachments/att-1');
   });
 
   it('startTask posts to start endpoint', async () => {

@@ -3891,10 +3891,30 @@ export interface TaskItemUpdate {
   trigger_phase_override?: string | null;
 }
 
-export interface PhotoUploadResponse {
-  url: string;
-  filename: string;
-  size_bytes: number;
+/** Thumbnail renditions of a task photo, or `null` while they generate. */
+export interface TaskPhotoThumbnailUris {
+  small: string;
+  medium: string;
+  large: string;
+}
+
+/**
+ * One uploaded task photo (REQ-006), addressed by its NFR-013 attachment.
+ *
+ * Replaces the `{ url, filename, size_bytes }` shape the client used to declare:
+ * that described an unauthenticated static file under `/uploads/tasks`, which
+ * no endpoint ever wrote and which #1339 removed. `uri` is permission-gated, so
+ * it must be fetched through the authenticated client (`AuthImage`) rather than
+ * handed to an `<img src>`.
+ */
+export interface TaskPhoto {
+  attachment_id: string;
+  /** Stable, tenant-scoped download URI for the original object. */
+  uri: string;
+  thumbnail_uris: TaskPhotoThumbnailUris | null;
+  mime_type: string;
+  byte_size: number;
+  original_filename: string;
 }
 
 export interface TaskCompleteRequest {

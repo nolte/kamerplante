@@ -52,6 +52,7 @@ from app.api.v1.slots.tenant_router import router as tenant_slots_router
 from app.api.v1.starter_kits.tenant_router import router as tenant_starter_kits_router
 from app.api.v1.succession_plans.tenant_router import router as tenant_succession_plans_router
 from app.api.v1.tanks.tenant_router import router as tenant_tanks_router
+from app.api.v1.tasks.photo_router import router as tenant_task_photos_router
 from app.api.v1.tasks.tenant_router import router as tenant_tasks_router
 from app.api.v1.tenant_scoped.cv_diagnosis.tenant_router import router as tenant_cv_diagnosis_router
 from app.api.v1.tenant_scoped.weather.tenant_router import router as tenant_weather_router
@@ -98,6 +99,11 @@ tenant_scoped_router.include_router(tenant_watering_logs_router)
 tenant_scoped_router.include_router(tenant_harvest_router)
 tenant_scoped_router.include_router(tenant_post_harvest_router)
 tenant_scoped_router.include_router(tenant_tasks_router)
+# REQ-006 — task photo upload (/tasks/{key}/photos), on the NFR-013
+# attachment fundament. Same shape as the plant gallery above; the
+# completion form's upload button posted to a path no router served, so a
+# `requires_photo` task could not be completed at all (#1339).
+tenant_scoped_router.include_router(tenant_task_photos_router)
 # REQ-006 §activity plans — the write routes on a plan's task templates (#992),
 # plan generation (#1003), and applying a plan to a plant/run (#1000). All the
 # writes on this feature are tenant-scoped now: generation and apply each need

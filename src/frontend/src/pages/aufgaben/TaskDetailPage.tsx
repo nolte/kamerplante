@@ -62,6 +62,7 @@ import * as speciesApi from '@/api/endpoints/species';
 import type { PlantInstance } from '@/api/types';
 import type { TaskItem, TaskComment, TaskAuditEntry, ChecklistItem } from '@/api/types';
 import { getPlantDisplayName } from '@/utils/plantDisplay';
+import AuthImage from '@/components/common/AuthImage';
 import PhotoUpload from '@/components/common/PhotoUpload';
 import TaskTimer from '@/components/common/TaskTimer';
 
@@ -940,15 +941,14 @@ export default function TaskDetailPage() {
                 </Typography>
                 <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                   {task.photo_refs.map((ref, i) => (
-                    <Box
+                    <AuthImage
                       key={ref}
-                      component="img"
-                      src={ref}
-                      alt={`Photo ${i + 1}`}
+                      uri={ref}
+                      alt={t('pages.tasks.photoAlt', { index: i + 1 })}
+                      width={120}
+                      height={120}
+                      data-testid={`task-photo-${i}`}
                       sx={{
-                        width: 120,
-                        height: 120,
-                        objectFit: 'cover',
                         borderRadius: 1,
                         border: '1px solid',
                         borderColor: 'divider',

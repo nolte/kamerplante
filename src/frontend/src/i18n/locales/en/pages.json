@@ -3175,6 +3175,7 @@
       "photoRequired": "Photo required",
       "noPhotos": "No photos available.",
       "photoRemove": "Remove photo {{index}}",
+      "photoAlt": "Photo {{index}}",
       "photos": "Photos",
       "timerDuration": "Timer Duration (sec)",
       "timerDurationHelper": "Countdown duration in seconds",

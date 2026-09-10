@@ -1,14 +1,12 @@
 import re
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -428,17 +426,15 @@ def root_health(request: Request) -> dict:
     return result
 
 
-# Static file serving for task photo uploads.
-# Mounting is best-effort: a non-writable upload location (e.g. a missing
-# volume in local/CI environments) must not prevent the application from
-# starting. The upload endpoints degrade gracefully when the directory is
-# unavailable.
-upload_dir = Path(settings.upload_dir)
-try:
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    app.mount("/uploads/tasks", StaticFiles(directory=str(upload_dir)), name="task_uploads")
-except OSError as exc:
-    logger.warning("upload_dir_unavailable", path=str(upload_dir), error=str(exc))
+# The unauthenticated ``/uploads/tasks`` static mount that stood here is gone
+# with #1339. It was the surviving half of a task-photo design that was never
+# finished: no route ever wrote into that directory (the upload button posted to
+# a path no router served), so it has been empty in every deployment and served
+# nothing. Had the missing half ever landed in that shape it would have published
+# every tenant's task photos to anyone who could guess a filename — no auth, no
+# tenant check. Task photos now go through the NFR-013 attachment fundament
+# instead (``app/api/v1/tasks/photo_router.py``), which is tenant-scoped,
+# permission-gated and covered by the DSGVO retention scope.
 
 app.add_exception_handler(KamerplanterError, app_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
