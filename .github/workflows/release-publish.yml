@@ -94,7 +94,7 @@ jobs:
         # Hash-verified lock via `uv sync --locked` — same install truth as api-docs.yml.
         working-directory: src/backend
         run: |
-          python -m pip install 'uv==0.12.12'
+          python -m pip install 'uv==0.12.13'
           uv sync --locked
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
