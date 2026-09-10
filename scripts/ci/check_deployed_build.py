@@ -4,14 +4,15 @@
 Issue #1236 — the LAST hop of the delivery chain, and the only one nothing
 measures. A merge reaches a cluster in four hops::
 
-    merge -> docker-publish (GHCR) -> Renovate digest PR (chart pin) -> ArgoCD sync
+    merge -> docker-publish (GHCR) -> release (chart pins the digest) -> ArgoCD sync
 
-``scripts/ci/check_digest_freshness.py`` measures hop 3: is the digest in
-``helm/kamerplanter/values.yaml`` still the one GHCR serves for its channel? It
-was **green throughout the 2026-08-17 incident, and correctly so** — the chart
-pinned a perfectly good build. Nobody measured hop 4: does the *pod* run those
-bytes? It did not, for days, and it surfaced only when an operator re-triggered
-a bug a merged fix had already removed.
+Hop 3 used to be a Renovate pull request carrying the digest into the develop
+tree, watched by a freshness lane; both were removed on 2026-09-10 because no
+deployment consumed that tree (see below), and the release job pins the digest
+itself. That hop-3 check was **green throughout the 2026-08-17 incident, and
+correctly so** — the chart pinned a perfectly good build. Nobody measured hop
+4: does the *pod* run those bytes? It did not, for days, and it surfaced only
+when an operator re-triggered a bug a merged fix had already removed.
 
 This script asks the instance itself, comparing two values that are the same
 40-character git SHA by construction:

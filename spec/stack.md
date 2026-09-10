@@ -191,9 +191,10 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Python-Dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+# Python-Dependencies — aus dem Lock, hash-verifiziert (NFR-009 §2.3)
+COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-install-project
 
 # Runtime Stage
 FROM python:3.14-slim
@@ -1929,8 +1930,8 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend
-          pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          uv sync --locked --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run Ruff (Linting)
         run: cd backend && ruff check .

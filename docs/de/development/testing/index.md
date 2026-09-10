@@ -21,10 +21,11 @@ Kamerplanter testet auf mehreren **Teststufen** — von schnellen, isolierten Un
 
 ```bash
 cd src/backend
-pip install -e ".[dev]"
+uv sync --locked --extra dev      # oder: task deps:sync
+source .venv/bin/activate
 ```
 
-Das installiert alle Produktions- und Entwicklungsabhängigkeiten, einschließlich pytest, pytest-asyncio und pytest-cov.
+Das installiert exakt die in `uv.lock` festgehaltenen Produktions- und Entwicklungsabhängigkeiten (hash-verifiziert), einschließlich pytest, pytest-asyncio und pytest-cov. uv installieren: <https://docs.astral.sh/uv/>.
 
 ### Tests ausführen
 

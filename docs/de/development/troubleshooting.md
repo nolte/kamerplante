@@ -30,7 +30,7 @@ Lösungen zu häufigen technischen Problemen bei Installation, Betrieb und Nutzu
     | `AUTH_EXCEPTION` | Falsches ArangoDB-Passwort | `ARANGODB_PASSWORD` in `.env` prüfen |
     | `redis.exceptions.ConnectionError` (Verbindungsfehler) | Redis/Valkey nicht erreichbar | Redis-Container neu starten |
     | `pydantic_settings.SettingsError` | Fehlende Pflicht-Umgebungsvariable | Alle Pflicht-Variablen in `.env` setzen |
-    | `Cannot import name 'X'` (Importfehler) | Fehlende Python-Abhängigkeit | `pip install -r requirements.txt` im Container |
+    | `Cannot import name 'X'` (Importfehler) | Fehlende Python-Abhängigkeit | `uv sync --locked` im Container |
 
 ??? question "ArangoDB-Container startet nicht"
     Häufigste Ursache ist ein Datenvolume aus einer alten ArangoDB-Version. Prüfe:

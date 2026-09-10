@@ -165,17 +165,17 @@ class TestTheDockerfileAcceptsTheRevision:
         """Cache placement, asserted because it costs real build minutes.
 
         The revision changes on *every commit*. Anything below it is rebuilt every
-        time, so the `ARG`/`ENV` pair must come after the hash-verified pip install
+        time, so the `ARG`/`ENV` pair must come after the hash-verified `uv sync`
         and after `COPY . .` — the two layers whose cache is worth keeping.
         """
         prod = _dockerfile_stages()["prod"]
-        pip_install = _index_of(prod, lambda line: line.startswith("RUN pip install"))
+        pip_install = _index_of(prod, lambda line: line.startswith("RUN uv sync"))
         copy_source = _index_of(prod, lambda line: re.match(r"COPY\s+\.\s+\.\s*$", line) is not None)
         arg_revision = _index_of(prod, lambda line: line.startswith("ARG BUILD_REVISION"))
 
-        assert pip_install != -1, "no `RUN pip install` found in the prod stage — has the stage been restructured?"
+        assert pip_install != -1, "no `RUN uv sync` found in the prod stage — has the stage been restructured?"
         assert copy_source != -1, "no `COPY . .` found in the prod stage — has the stage been restructured?"
-        assert arg_revision > pip_install, "ARG BUILD_REVISION above the pip layer invalidates it on every commit"
+        assert arg_revision > pip_install, "ARG BUILD_REVISION above the uv sync layer invalidates it on every commit"
         assert arg_revision > copy_source, "ARG BUILD_REVISION above `COPY . .` invalidates it on every commit"
 
     def test_the_dev_target_gets_no_revision(self) -> None:

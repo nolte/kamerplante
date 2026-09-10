@@ -23,7 +23,7 @@ name: Release Lag
 # done and delivers nothing.
 #
 # It is SCHEDULED, not a pull-request gate, for the same reason
-# chart-image-digest-freshness.yml is: release lag is a fact that changes with
+# release-assets-complete.yml is: release lag is a fact that changes with
 # NO COMMIT. It grows every hour that nobody publishes, and it shrinks the
 # moment somebody does — neither event is a push, so a PR gate can never observe
 # it. The only thing a PR gate could measure here is "this PR is not yet
@@ -38,9 +38,8 @@ name: Release Lag
 
 on:
   schedule:
-    # 09:00 UTC daily — offset from the 00:00 Nuclei nightly, the 01:00/01:17/
-    # 01:30 security+E2E block and the 06:00 digest-freshness job, so the
-    # alerting jobs do not cluster. Daily is the right cadence: the lag this
+    # 09:00 UTC daily — offset from the 00:00 Nuclei nightly and the 01:00/
+    # 01:17/01:30 security+E2E block, so the alerting jobs do not cluster. Daily is the right cadence: the lag this
     # job guards is measured in days (see RELEASE_LAG_THRESHOLD_DAYS), so
     # sampling more often only adds noise, and less often widens the blind spot
     # it closes.

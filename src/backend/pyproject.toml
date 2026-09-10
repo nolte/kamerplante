@@ -90,6 +90,18 @@ markers = [
 line-length = 120
 target-version = ["py314"]
 
+[tool.uv]
+# The lock toolchain (NFR-009 §2.3). uv replaced pip-tools on 2026-09-10: Renovate's
+# pip-compile manager could not parse the lock header this project needs and had
+# silently stopped regenerating the locks on 2026-08-02 (#1303/#906 vs. its option
+# allowlist), and the pip-tools sidecar could not be held at the pip/click versions
+# it survives on (#929, #1296). `uv lock` writes `uv.lock`; `uv sync --locked`
+# installs from it with hash verification; Renovate's pep621 manager runs
+# `uv lock --upgrade-package` in the same pull request that moves a range here.
+# The floor is what the Dockerfile and CI install; Renovate reads it as its own
+# uv constraint (pep621 `constraints.uv` falls back to this value).
+required-version = ">=0.12.12"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"

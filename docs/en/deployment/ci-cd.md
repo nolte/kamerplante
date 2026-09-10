@@ -41,7 +41,6 @@ feature/* ──► develop ──► (Release Tag v*) ──► main
 | `release-publish.yml` | **Manual only** (`workflow_dispatch`) | Publish a release draft — the only step that turns a draft into a release |
 | `release-cd-deliver-docs.yml` | Published release | Deploy MkDocs documentation to GitHub Pages |
 | `release-cd-refresh-master.yml` | Published release | Update `main` branch to release state |
-| `chart-image-digest-freshness.yml` | Scheduled, daily at 06:00 UTC | Reports when the digests in `helm/kamerplanter/values.yaml` have gone stale |
 | `release-lag.yml` | Scheduled, daily at 09:00 UTC (+ manual) | Reports when `develop` carries commits no **published** release contains |
 
 ---
@@ -67,7 +66,10 @@ jobs:
           allow-prereleases: true
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install 'uv==0.12.12'
+          uv sync --locked --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Ruff lint
         run: ruff check .
@@ -89,10 +91,10 @@ jobs:
 
 ### Installing dependencies
 
-Backend dependencies are installed from `pyproject.toml`. The `[dev]` extra includes pytest, ruff, and other development tools:
+Backend dependencies are installed from `uv.lock`, the hash-bearing lock resolved from `pyproject.toml` (NFR-009). The `[dev]` extra includes pytest, ruff, and other development tools:
 
 ```bash
-pip install -e ".[dev]"
+uv sync --locked --extra dev
 ```
 
 ---
@@ -196,12 +198,14 @@ The backend image is based on `python:3.14-slim` and uses a multi-stage Dockerfi
 ```dockerfile title="src/backend/Dockerfile (simplified, prod stage)"
 FROM python:3.14-slim AS base
 WORKDIR /app
-COPY pyproject.toml requirements.txt requirements-dev.txt ./
+COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
+ENV UV_PYTHON=/usr/local/bin/python3 UV_PYTHON_DOWNLOADS=never PATH="/app/.venv/bin:$PATH"
+COPY pyproject.toml uv.lock ./
 
 FROM base AS prod
-RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
-    && pip install --no-cache-dir --no-deps .
+RUN uv sync --locked --no-install-project
 COPY . .
+RUN uv sync --locked --no-editable
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -d /app -s /usr/sbin/nologin app \
     && chown -R 1000:1000 /app
 USER 1000
@@ -209,7 +213,7 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-The image is pushed to `ghcr.io/nolte/kamerplanter-backend`. Dependencies come exclusively from the hash-pinned `requirements*.txt` locks (NFR-009), not directly from `pyproject.toml`.
+The image is pushed to `ghcr.io/nolte/kamerplanter-backend`. Dependencies come exclusively from the hash-bearing `uv.lock` (NFR-009): `uv sync --locked` refuses a lock that no longer satisfies `pyproject.toml` and verifies every artifact against its hash — the first `uv sync` lays down the dependencies as their own cacheable layer, the second adds only the project.
 
 ### Frontend image {#frontend-image}
 
@@ -487,17 +491,17 @@ sequenceDiagram
 
 ## Deployment and rollback
 
-A cluster does **not** learn about a new version because a tag was moved. The chart references every Kamerplanter image by an immutable digest:
+A cluster does **not** learn about a new version because a tag was moved. The **published** chart references every Kamerplanter image by an immutable digest that the release job writes in at packaging time:
 
 ```yaml
 image:
   repository: ghcr.io/nolte/kamerplanter-backend
-  tag: latest@sha256:af9bec…   # (1)!
+  tag: 0.2.1@sha256:af9bec…    # (1)!
   pullPolicy: IfNotPresent      # (2)!
 ```
 
-1. What matters is the part **after** the `@`. The digest is content-addressed and cannot move. The `latest` in front of it is not a moving reference here but a label recording which channel the digest came from — nothing resolves it. It sits on the same line because that is the notation Renovate maintains (see below). In the release chart the release version stands here instead of `latest`, because `pin_chart_image_digests.sh` writes it in at packaging time — the digest behind it remains the part that matters.
-2. Deliberately stays `IfNotPresent`. A digest is content-addressed: an image already on the node **is** the requested one, so a re-pull could only confirm it. `Always` would make every pod start depend on GHCR being reachable and would gain nothing.
+1. What matters is the part **after** the `@`. The digest is content-addressed and cannot move. The version in front of it is not a moving reference but a label — nothing resolves it. In the repository this field reads `tag: latest`: `scripts/ci/pin_chart_image_digests.sh` rewrites every Kamerplanter reference to `<version>@sha256:<digest>` at release time, and `scripts/check_chart_image_digests.py` proves in the same job that none escaped. The `develop` tree with `latest` is therefore explicitly not a deploy channel (see [Two channels](#two-channels)).
+2. Deliberately stays `IfNotPresent`. A digest is content-addressed: an image already on the node **is** the requested one, so a re-pull could only confirm it. `Always` would make every pod start depend on GHCR being reachable and would gain nothing. With a moving `latest` the same value would be a trap — one more reason the tree is not rolled out.
 
 ### How a new version reaches production {#how-a-new-version-reaches-production}
 
@@ -505,7 +509,7 @@ The production instance rolls out **release versions only**. That is an operatin
 
 ```mermaid
 graph TD
-    A[1. Merge to develop] --> B[2. docker-publish + Renovate<br/>digest in values.yaml on develop]
+    A[1. Merge to develop] --> B[2. docker-publish<br/>images to GHCR, tag latest]
     B -.pre-stage, does not reach production.-> C
     C[3. Maintainer publishes a release<br/>MANUAL] --> D[4. docker-publish pins<br/>chart images to version + digest]
     D --> E[5. Raise targetRevision in the GitOps repo<br/>to the new chart version — MANUAL]
@@ -515,10 +519,13 @@ graph TD
 Spelled out, that is six hops, each owned by a different actor:
 
 1. **Merge to `develop`** — the commit that changes the code. A human.
-2. **`docker-publish.yml`** builds the images and pushes them; **Renovate**
-   writes the new digests into `helm/kamerplanter/values.yaml` on `develop` via
-   the grouped `kamerplanter images` pull request. This is the **pre-stage**: it
-   keeps the development state consistent but **does not reach production**.
+2. **`docker-publish.yml`** builds the images and pushes them to GHCR, where
+   `:latest` moves on. This is the **pre-stage**: it makes the build available
+   but **does not reach production** — nothing in
+   `helm/kamerplanter/values.yaml` on `develop` changes because of it. (Until
+   2026-09-10 Renovate wrote the new digests to `develop` here via a pull
+   request; that fed no deployment and the PR was rebased by every publish
+   without ever merging.)
 3. **A maintainer cuts a release** — by hand, via `release-publish.yml`. **The
    first manual hop.** If it does not happen, nothing from steps 1 and 2 is
    delivered, no matter how long ago it was.
@@ -545,7 +552,7 @@ Spelled out, that is six hops, each owned by a different actor:
     `v0.1.0` (published 08-06), while the newest published release was already
     `v0.2.0` (published 08-13).
 
-The deploy itself is therefore a **commit** — in the GitOps repository — not an operation on the cluster. That the digests in the chart values are present and well-formed at all is enforced by `scripts/check_chart_image_digests.py` in the required `static` check; whether they are still *current* is answered only by the daily run of `chart-image-digest-freshness.yml` (see [Checks along the delivery chain](#checks-delivery-chain)).
+The deploy itself is therefore a **commit** — in the GitOps repository — not an operation on the cluster. That the digests in the published chart are present and well-formed is enforced by `scripts/check_chart_image_digests.py` right after pinning in the release job; which version the instance actually runs is answered only by the instance itself (see [Checks along the delivery chain](#checks-delivery-chain)).
 
 ### Rollback
 
@@ -688,17 +695,18 @@ therefore says nothing about the others:
 
 | Transition | Question | Check |
 |---|---|---|
-| GHCR → chart pin on `develop` | Is the digest in `values.yaml` still the current one? | `chart-image-digest-freshness.yml`, daily at 06:00 UTC |
+| GHCR → chart pin in the release | Does every Kamerplanter image in the packaged chart carry a digest? | `scripts/check_chart_image_digests.py` in the release job, right after pinning |
 | `develop` → published release | Does `develop` carry commits no published release contains — and for how long? | `release-lag.yml`, daily at 09:00 UTC |
 | Release → `targetRevision` in the GitOps repo | Does the instance point at the new release? | **none** — the value lives in another repository |
 | Chart pin → running pod | Does the pod run the bytes the chart names? | **no automation** — by hand, see [Frequently Asked Questions](#frequently-asked-questions) |
 
 !!! danger "One green check does not imply the next"
 
-    When the second incident surfaced, `chart-image-digest-freshness` was green
-    — entirely correctly: the chart pin *was* current. That is exactly what made
-    the divergence invisible, because the only check that existed measured the
-    hop that worked. <!-- #1210 -->
+    When the second incident surfaced, the daily digest check of the time
+    (`chart-image-digest-freshness.yml`, until 2026-09-10) was green — entirely
+    correctly: the chart pin *was* current. That is exactly what made the
+    divergence invisible, because the only check that existed measured the hop
+    that worked. <!-- #1210 -->
 
 #### What `release-lag.yml` does — and what it does not
 
@@ -774,7 +782,7 @@ All images are publicly readable. For local testing:
 ## Frequently Asked Questions
 
 ??? question "Why does the backend CI fail even though tests pass locally?"
-    Make sure you are using Python 3.14 (`python --version`). The CI explicitly uses `python-version: '3.14'` with `allow-prereleases: true`. Differing Python versions can lead to different behavior. Also check that all dependencies are installed with `pip install -e ".[dev]"`.
+    Make sure you are using Python 3.14 (`python --version`). The CI explicitly uses `python-version: '3.14'` with `allow-prereleases: true`. Differing Python versions can lead to different behavior. Also check that all dependencies are installed with `uv sync --locked --extra dev`.
 
 ??? question "Why is no new image built even though I pushed to develop?"
     Path filtering in `docker-publish.yml` ensures that only actually affected components are built. If you only changed a spec file, for example, no image will be built. On `v*` tags, filtering is bypassed.

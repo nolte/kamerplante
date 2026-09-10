@@ -32,8 +32,7 @@ turns a positive test into a certificate of nothing.
 
 **Why here.** The script lives outside the backend package (it is a repository
 tool, not application code), but ``pytest tests/unit/`` is the tier that runs in
-CI, so the test lives here and loads the script by path — the same arrangement
-as ``test_digest_freshness_check.py``. Traces to #1236 (no TC-ID: a repository
+CI, so the test lives here and loads the script by path. Traces to #1236 (no TC-ID: a repository
 tool is not a user-facing case).
 """
 

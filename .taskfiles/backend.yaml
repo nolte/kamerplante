@@ -103,79 +103,44 @@ tasks:
     cmds:
       - npx --yes @stoplight/spectral-cli@6.16.3 lint --ruleset ../../.spectral.yaml --fail-severity error openapi.json
 
-  deps:toolchain:
-    desc: |
-      Install the pinned toolchain that compiles the backend locks
-      (.github/pip-tools-requirements.txt) into the ACTIVE Python 3.14
-      environment. `deps:compile` and `deps:check` both declare this task as a
-      prerequisite, so you no longer have to remember it — but that also means
-      either of them will install this set into whatever environment is active.
-      Prefer a throwaway virtualenv.
-
-      Only two entries of that file also appear in the backend's own locks, and
-      both are held equal to them on purpose: click at 8.4.2 and packaging at
-      26.2. So running this inside a backend virtualenv no longer leaves it on a
-      packaging the lock does not pin — it did until 2026-08-31, when this file
-      pinned packaging 26.3 against a lock that pins 26.2.
-
-      Every pin in that file is load-bearing, but not all for the same reason —
-      the file itself says which does what, measured rather than assumed.
-      pip-compile reconstructs the header line it writes into each lock from
-      *click's* parameter metadata, so click 8.4.2 -> 8.5.0 alone rewrote both
-      committed locks' headers and reddened the gate on every backend pull
-      request (#1296); setuptools and wheel, by contrast, never touch this
-      project's own metadata (pip-tools parses its pyproject.toml statically) and
-      matter only because `--no-build-isolation` makes them build the two
-      sdist-only dependencies whose metadata feeds the resolution.
-    cmds:
-      - python -m pip install --no-deps -r .github/pip-tools-requirements.txt
-      - python -m pip check
-
   deps:compile:
     desc: |
-      Recompile the backend dependency locks (requirements.txt +
-      requirements-dev.txt) from src/backend/pyproject.toml — the single source of
-      truth (NFR-009 §6.1). Run this after editing [project].dependencies or the
-      dev extra, then commit the regenerated locks.
+      Resolve the backend dependency lock (src/backend/uv.lock) from
+      src/backend/pyproject.toml — the single source of truth (NFR-009 §6.1).
+      Run this after editing [project].dependencies or the dev extra, then
+      commit the regenerated lock. `uv lock` is a no-op while the lock already
+      satisfies pyproject.toml; it never moves a package that is still inside
+      its range — that is `uv lock --upgrade-package <name>`, which is what
+      Renovate runs in the pull request that bumps the range.
 
-      These two `pip-compile` lines are the ONLY copy of the lock-compiling flags
-      in the repository: backend.yml's "Lock staleness" job runs `task
-      deps:check`, which runs this task, so CI and a contributor cannot drift
-      apart on a flag. They used to be duplicated inline in the workflow, and
-      `.taskfiles/backend.yaml` was not even in that workflow's `paths:` — a pull
-      request dropping `--no-strip-extras` here would have triggered no backend
-      job at all.
-
-      Why each flag: `--generate-hashes` is NFR-009 §2.3. `--no-strip-extras` is
-      #903 (Renovate cannot map `uvicorn[standard]` to a lock entry that stripped
-      the extra) and a deliberate opt-out of pip-tools 8.0's future default.
-      `--no-build-isolation` is #1296: two dependencies ship as sdists only
-      (aquacropeto, http-ece via pywebpush) and pip builds their metadata during
-      resolution, which decides what lands in the lock; with build isolation pip
-      would install each sdist's build backend fresh from PyPI, unpinned, so the
-      flag is what makes the pinned setuptools/wheel the ones that render that
-      metadata. It is recorded in each lock's header, which is why adding it
-      recompiled both.
-    deps: [deps:toolchain]
+      uv replaced pip-tools on 2026-09-10; [tool.uv] in pyproject.toml records
+      why. The pinned toolchain that used to live in
+      .github/pip-tools-requirements.txt went with it: uv is one static binary
+      whose version floor sits in pyproject.toml, and the lock's bytes are a
+      function of the resolver input, not of whichever Python environment
+      happened to be active.
     dir: src/backend
     cmds:
-      - pip-compile --no-build-isolation --generate-hashes --output-file=requirements.txt --no-strip-extras pyproject.toml
-      - pip-compile --no-build-isolation --generate-hashes --extra=dev --output-file=requirements-dev.txt --no-strip-extras pyproject.toml
+      - uv lock
 
   deps:check:
     desc: |
       Lock-staleness gate — and literally the thing CI runs (backend.yml "Lock
-      staleness" invokes this task): recompile both locks via `deps:compile`,
-      then fail if the committed files differ. Catches a pyproject.toml bump that
-      was not re-compiled, or a hand-edited lock (NFR-009 §2.3). On failure the
-      regenerated locks are left in the working tree — that diff is precisely
-      what `task deps:compile` produced, so commit it if the bump was intentional.
-
-      Carries no `pip-compile` invocation of its own on purpose: it delegates to
-      `deps:compile` so the gate and the fix cannot be run with different flags.
-      `deps:compile` in turn pulls in `deps:toolchain`, so a bare `task
-      deps:check` installs the pinned toolchain first.
-    deps: [deps:compile]
+      staleness" invokes this task): fail if src/backend/uv.lock does not
+      satisfy pyproject.toml, without touching the file. Catches a
+      pyproject.toml bump that was not re-locked, or a hand-edited lock
+      (NFR-009 §2.3). On failure run `task deps:compile` and commit the result.
     dir: src/backend
     cmds:
-      - git diff --exit-code -- requirements.txt requirements-dev.txt
+      - uv lock --check
+
+  deps:sync:
+    desc: |
+      Create or update src/backend/.venv from the lock, dev extra included —
+      the local counterpart of the Dockerfile's `uv sync --locked`. Installs
+      exactly the locked set with hash verification and removes anything else
+      from the environment; `--locked` refuses to run against a stale lock
+      instead of silently re-resolving.
+    dir: src/backend
+    cmds:
+      - uv sync --locked --extra dev

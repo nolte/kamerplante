@@ -32,7 +32,7 @@ tech_stack:
       role: Primary implementation language for the backend API, workers, and RAG/inference services.
       status: active
       lifecycle: all
-      source_of_truth: src/backend/requirements.txt
+      source_of_truth: src/backend/uv.lock
       rationale: >-
         acknowledged-missing-signal: python is the application runtime here, not a docs-build
         helper; the closed group enum has no application-runtime bucket, so it is grouped under
@@ -43,14 +43,14 @@ tech_stack:
       role: Web framework serving the backend HTTP API.
       status: active
       lifecycle: runtime
-      source_of_truth: src/backend/requirements.txt
+      source_of_truth: src/backend/uv.lock
     - name: celery
       kind: framework
       group: build-tooling
       role: Distributed task queue running the asynchronous backend workers.
       status: active
       lifecycle: runtime
-      source_of_truth: src/backend/requirements.txt
+      source_of_truth: src/backend/uv.lock
     - name: node
       kind: runtime
       group: build-tooling

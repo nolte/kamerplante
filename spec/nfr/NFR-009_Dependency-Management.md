@@ -112,17 +112,17 @@ Das Projekt folgt den Grundsätzen des [Semantic Versioning 2.0.0](https://semve
 | Ökosystem | Lockfile | Erzeugt durch |
 |---|---|---|
 | Node.js (Frontend) | `package-lock.json` | `npm install` |
-| Python (Backend) | `requirements.txt` (gepinnt) | `pip-compile` (pip-tools) |
-| Python (Dev) | `requirements-dev.txt` (gepinnt) | `pip-compile` |
+| Python (Backend, inkl. Dev-Extra) | `uv.lock` (mit Hashes) | `uv lock` |
 
 **MUSS**: `package-lock.json` wird bei jedem Dependency-Update mit aktualisiert.
-**MUSS**: `requirements.txt` wird über `pip-compile` aus `pyproject.toml` generiert — manuelle Bearbeitung ist nicht erlaubt.
-**MUSS**: CI prüft die Integrität der Lockfiles (`npm ci` statt `npm install`, `pip install -r requirements.txt` statt `pip install .`).
+**MUSS**: `uv.lock` wird über `uv lock` aus `pyproject.toml` generiert — manuelle Bearbeitung ist nicht erlaubt. Die Version von uv ist in `[tool.uv].required-version` verankert; Dockerfile, CI und Renovate lesen dieselbe Untergrenze.
+**MUSS**: CI prüft die Integrität der Lockfiles (`npm ci` statt `npm install`; `uv lock --check` als Gate und `uv sync --locked` statt `pip install .` — `--locked` verweigert ein Lock, das `pyproject.toml` nicht mehr erfüllt, und verifiziert jedes Artefakt gegen den im Lock hinterlegten Hash).
 
 ```bash
-# Python: Lockfile generieren
-pip-compile pyproject.toml -o requirements.txt --strip-extras
-pip-compile pyproject.toml --extra dev -o requirements-dev.txt --strip-extras
+# Python: Lockfile generieren bzw. prüfen
+uv lock            # task deps:compile
+uv lock --check    # task deps:check — das Gate „Lock staleness" in backend.yml
+uv sync --locked --extra dev   # task deps:sync — lokale Umgebung aus dem Lock
 
 # Node.js: Lockfile-Integrität prüfen (CI)
 npm ci --ignore-scripts
@@ -655,8 +655,8 @@ jobs:
 
 | Werkzeug | Zweck | Konfiguration |
 |---|---|---|
-| `pip-tools` (`pip-compile`) | Lockfile-Generierung aus `pyproject.toml` | `requirements.txt`, `requirements-dev.txt` |
-| `pip-audit` | CVE-Scanning | CI-Pipeline |
+| `uv` (`uv lock`, `uv sync --locked`) | Lockfile-Generierung aus `pyproject.toml` und hash-verifizierte Installation | `uv.lock`, `[tool.uv]` in `pyproject.toml` |
+| `pip-audit` | CVE-Scanning (liest `uv export --format requirements.txt`) | CI-Pipeline |
 | `pip-licenses` | Lizenz-Prüfung | CI-Pipeline |
 
 **MUSS**: `pyproject.toml` enthält Dependencies mit `>=`-Pinning:
@@ -677,16 +677,23 @@ dependencies = [
 ]
 ```
 
-**MUSS**: Renovate aktualisiert `pyproject.toml` und generiert automatisch das Lockfile (`requirements.txt`) via Post-Update-Command:
+**MUSS**: Renovate aktualisiert `pyproject.toml` und regeneriert `uv.lock` in derselben Pull Request. Der eingebaute `pep621`-Manager erkennt `uv.lock` neben `pyproject.toml` und führt `uv lock --upgrade-package` aus; Updates innerhalb einer Range (`>=x,<y`) erreichen das Lock über `rangeStrategy: update-lockfile`, ohne die Range zu verändern. Kein anderer Manager (`poetry`, `pip_requirements`, `pip-compile`) darf dieselbe Datei lesen:
 
 ```json5
 // renovate.json5 — Python-spezifisch (in packageRules)
 {
-  "matchManagers": ["pip_requirements", "pep621"],
-  "matchFileNames": ["src/backend/pyproject.toml"],
-  "postUpdateOptions": ["pipCompileOutput"]
+  matchManagers: ['poetry', 'pip_requirements', 'pip-compile'],
+  matchFileNames: ['src/backend/**'],
+  enabled: false,
+},
+{
+  matchManagers: ['pep621'],
+  matchFileNames: ['src/backend/**'],
+  rangeStrategy: 'update-lockfile',
 }
 ```
+
+> **Warum uv und nicht mehr pip-tools (2026-09-10):** Renovates `pip-compile`-Manager akzeptiert nur eine feste Liste von Header-Optionen; die hier nötigen `--no-strip-extras` und `--no-build-isolation` gehörten nicht dazu, sodass der Manager ab 2026-08-02 still nichts extrahierte und die Locks sechs Wochen nicht regeneriert wurden. Zudem ließ sich die Toolchain des Renovate-Sidecars (pip, click) nicht auf die Versionen festhalten, die pip-tools überlebte. uv ist eine statische Binary mit einer Version, die alle drei Konsumenten (Dockerfile, CI, Renovate) aus `[tool.uv].required-version` lesen.
 
 **MUSS**: Kompatibilität mit Ruff und mypy wird durch CI sichergestellt (vgl. NFR-003). Ein Dependency-Update, das Ruff- oder mypy-Fehler verursacht, kann nicht auto-gemergt werden.
 
@@ -879,8 +886,8 @@ pip-licenses --format=csv --output-file=license-report-backend.csv
     - [ ] High-CVEs werden innerhalb von 7 Tagen adressiert
 - [ ] **Lockfiles**
     - [ ] `package-lock.json` wird bei jedem Frontend-Update aktualisiert
-    - [ ] `requirements.txt` wird via `pip-compile` generiert
-    - [ ] CI verwendet `npm ci` und `pip install -r requirements.txt`
+    - [ ] `uv.lock` wird via `uv lock` generiert
+    - [ ] CI verwendet `npm ci` und `uv sync --locked`
 - [ ] **Major-Upgrade-Prozess**
     - [ ] Bewertungscheckliste ist dokumentiert und wird angewendet
     - [ ] Feature-Branch-Strategie ist definiert
@@ -911,7 +918,7 @@ pip-licenses --format=csv --output-file=license-report-backend.csv
 | **GitHub** | Plattform | Vendor Lock-In für PR-Workflow | Renovate auch self-hosted möglich |
 | **Renovate Bot** (Mend) | SaaS / GitHub App | Dienst-Ausfall → keine automatischen PRs | Self-hosted Renovate als Fallback |
 | **npm Registry** | Paket-Registry | Registry-Ausfall → keine Frontend-Updates | `npm ci` mit Cache, Lockfile als Fallback |
-| **PyPI** | Paket-Registry | Registry-Ausfall → keine Backend-Updates | `pip install -r requirements.txt` mit Cache |
+| **PyPI** | Paket-Registry | Registry-Ausfall → keine Backend-Updates | `uv sync --locked` mit Cache |
 | **GitHub Advisory Database** | Vulnerability-Daten | Unvollständige CVE-Abdeckung | Ergänzend `npm audit` und `pip-audit` |
 
 ---
@@ -925,7 +932,7 @@ pip-licenses --format=csv --output-file=license-report-backend.csv
 | **License-Compliance-Verstöße** | Rechtliche Konsequenzen bei Verwendung von Copyleft-Lizenzen in proprietärem Kontext | Mittel | Automatische Lizenz-Prüfung in CI, Allowlist erlaubter Lizenzen |
 | **Dependency-Konflikte durch fehlende Gruppierung** | Inkompatible Paketversionen (z.B. MUI-Komponenten mit unterschiedlichen Versionen) | Mittel | Renovate-Gruppierungsregeln stellen atomare Updates sicher |
 | **CI-Überlastung durch zu viele Dependency-PRs** | Lange Wartezeiten für Feature-PRs, erhöhte GitHub Actions-Kosten | Niedrig | Rate Limiting (5/Stunde, 10 gleichzeitig), wöchentliches Schedule |
-| **Lockfile-Drift zwischen Entwicklern** | „Works on my machine“-Probleme, nicht reproduzierbare Builds | Mittel | Lockfile-Pflicht, `npm ci` in CI, `pip-compile` für Python |
+| **Lockfile-Drift zwischen Entwicklern** | „Works on my machine“-Probleme, nicht reproduzierbare Builds | Mittel | Lockfile-Pflicht, `npm ci` in CI, `uv lock --check` für Python |
 
 ---
 

@@ -163,36 +163,46 @@ containers:
             port: *backend-port
 ```
 
-### 3.4 Image-Referenzen: Digest statt beweglichem Tag
+### 3.4 Image-Referenzen: Digest im Release, `latest` im Baum
 
 **Regel:** Jedes von diesem Projekt veroeffentlichte Image
-(`ghcr.io/nolte/kamerplanter-*`) wird in `values.yaml` mit unveraenderlichem
-Digest referenziert:
+(`ghcr.io/nolte/kamerplanter-*`) wird im **veroeffentlichten Chart** mit
+unveraenderlichem Digest referenziert; im Repository steht `latest`:
 
 ```yaml
+# helm/kamerplanter/values.yaml auf develop — kein Deploy-Kanal
 image:
   repository: ghcr.io/nolte/kamerplanter-backend
-  tag: latest@sha256:af9bec…   # Digest entscheidet, Tag ist nur ein Etikett
+  tag: latest
   pullPolicy: IfNotPresent
+
+# dasselbe Feld im Release-Chart, vom Release-Job umgeschrieben
+  tag: 0.2.1@sha256:af9bec…   # Digest entscheidet, Version ist nur ein Etikett
 ```
 
 - Der Digest steht **im `tag`-Feld**, nicht im `digest`-Feld, das bjw-s/common
-  ebenfalls anbietet: Renovate pflegt diese Werte, und sein `helm-values`-Manager
-  kennt nur `repository` + `tag`. Ein separates `digest`-Feld wuerde er nie
-  aktualisieren — der Tag zoege weiter, der Digest bliebe stehen.
-- `pullPolicy: IfNotPresent` bleibt korrekt und ist bei einer Digest-Referenz
-  auch sicher: Ein vorhandenes Image *ist* das angeforderte. Bei einem
-  beweglichen Tag war derselbe Wert eine Falle — er schlaegt das implizite
-  `Always`, das Kubernetes fuer `:latest` setzt.
+  ebenfalls anbietet: `scripts/ci/pin_chart_image_digests.sh` schreibt die
+  ganze Referenz in EIN Feld, und eine Referenz in einem Feld kann nicht halb
+  aktualisiert werden.
+- `pullPolicy: IfNotPresent` ist bei einer Digest-Referenz korrekt und sicher:
+  Ein vorhandenes Image *ist* das angeforderte. Bei einem beweglichen Tag ist
+  derselbe Wert eine Falle — er schlaegt das implizite `Always`, das Kubernetes
+  fuer `:latest` setzt. Deshalb ist der `develop`-Baum mit `tag: latest`
+  ausdruecklich **kein Deploy-Kanal** (siehe „Zwei Kanaele" in
+  `docs/*/deployment/ci-cd.md`).
 - Ausnahme: **lokal von Skaffold gebaute** Images (`kamerplanter-backend` ohne
   Registry-Praefix in `values-dev*.yaml`). Die existieren in keiner Registry,
   haben keinen Digest, und Skaffold ersetzt die Referenz ohnehin.
-- Durchgesetzt von `scripts/check_chart_image_digests.py` im Pflicht-Check
-  `static`; beim Release pinnt `scripts/ci/pin_chart_image_digests.sh` auf
-  `<version>@sha256:<digest>`.
+- Durchgesetzt **beim Release**: `pin_chart_image_digests.sh` pinnt auf
+  `<version>@sha256:<digest>`, und `scripts/check_chart_image_digests.py`
+  prueft direkt danach im selben Job, dass kein Kamerplanter-Image ohne Digest
+  ins gepackte Chart gelangt.
 
 Begruendung: Eine bewegliche Referenz macht Rollback unmoeglich — „das
-vorherige Image" loest sich auf das aktuelle auf (#987).
+vorherige Image" loest sich auf das aktuelle auf (#987). Bis 2026-09-10 trug
+auch der `develop`-Baum `latest@sha256:…`, nachgefuehrt von einer Renovate-
+Regel; das versorgte kein Deployment und die Renovate-PR wurde von jedem
+Publish neu rebased und nie gemergt (#1326), deshalb ist es weg.
 
 ---
 

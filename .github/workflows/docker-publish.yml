@@ -20,9 +20,9 @@ on:
       # than a red check (#1313).
       - 'src/inference-service/**'
       - 'src/knowledge-service/**'
-      # The three scripts the publishing jobs execute. Named individually rather
-      # than as `scripts/ci/**`: the other four files there belong to the
-      # release-lag, delivery-run and digest-freshness lanes, and this workflow
+      # The four scripts the publishing jobs execute. Named individually rather
+      # than as `scripts/ci/**`: the other files there belong to the
+      # release-lag, delivery-run and deployed-build lanes, and this workflow
       # builds and pushes eight images — widening it to the whole directory
       # would spend a full delivery run on a change it cannot affect. The
       # precision is safe to maintain because
@@ -31,6 +31,7 @@ on:
       - 'scripts/ci/determine_chart_version.sh'
       - 'scripts/ci/pin_chart_image_digests.sh'
       - 'scripts/ci/publish_release_asset.sh'
+      - 'scripts/check_chart_image_digests.py'
   workflow_dispatch:
 
 env:
@@ -868,6 +869,17 @@ jobs:
         # The digest is resolved from the registry, which also proves the images
         # for this release actually exist (see the `needs:` on this job).
         run: scripts/ci/pin_chart_image_digests.sh "helm/$CHART/values.yaml" "$VERSION"
+
+      - name: Prove every Kamerplanter image in the release chart is digest-pinned
+        if: steps.version.outputs.version != '' && matrix.chart == 'kamerplanter'
+        # Independent of the script above, which re-reads its own output: this
+        # walks every values file by YAML path, refuses any owned image without
+        # `@sha256:`, and refuses one repository pinned to two digests in one
+        # file. Until 2026-09-10 it ran in the required `static` gate against
+        # develop-side `latest@sha256` pins that Renovate maintained; those pins
+        # fed no deployment and are gone, so the guard moved to the only place a
+        # pin now exists — the release.
+        run: python3 scripts/check_chart_image_digests.py
 
       # TWO logins to the same registry, and both are load-bearing (#1218).
       #

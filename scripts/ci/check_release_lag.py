@@ -34,8 +34,7 @@ Lag is alertable when BOTH hold:
   2. the **oldest** of those un-released commits is at least
      RELEASE_LAG_THRESHOLD_DAYS old (default 3).
 
-The grace window (2) is the point of the threshold, exactly as in
-scripts/ci/check_digest_freshness.py: `develop` is ahead of the last release
+The grace window (2) is the point of the threshold: `develop` is ahead of the last release
 almost all of the time, and alerting on that would be alerting on normal
 development. What is not normal is a commit sitting undelivered for days. The
 oldest un-released commit — not the newest, not the release date — is the right

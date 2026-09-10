@@ -1,4 +1,4 @@
-# Multi-target image — dev and prod share one base stage (no duplicated apt/pip
+# Multi-target image — dev and prod share one base stage (no duplicated apt/uv
 # logic, no separate Dockerfile.dev).
 #   prod (default, built by CI):   docker build .
 #   dev  (built by skaffold):      docker build --target dev .
@@ -11,6 +11,21 @@ LABEL org.opencontainers.image.title="kamerplanter-backend" \
       org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
+
+# uv is the lock toolchain (NFR-009 §2.3; [tool.uv] in pyproject.toml says why it
+# replaced pip-tools). It is one static binary, copied from its own image and
+# digest-pinned so Renovate's dockerfile manager ages it exactly like the base
+# image above. The environment pins uv to the interpreter this image ships —
+# no managed-Python download, no cache layer to carry, bytecode compiled once at
+# build time — and puts the project environment on PATH so the CMD lines below
+# resolve `uvicorn` without an activation step.
+COPY --from=ghcr.io/astral-sh/uv:0.12.12@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4 /uv /bin/uv
+ENV UV_PYTHON=/usr/local/bin/python3 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_NO_CACHE=1 \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    PATH="/app/.venv/bin:$PATH"
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # the dependency-install layers are cached independently of application code.
 # The locks are the single source of truth for what actually gets installed
 # (NFR-009 §2.3/§6.1); pyproject.toml is only used for the app package itself.
-COPY pyproject.toml requirements.txt requirements-dev.txt ./
+COPY pyproject.toml uv.lock ./
 
 # ── Development target: hot-reload + debugpy (skaffold dev syncs app/**/*.py) ──
 # Runs as root by design; values-dev.yaml sets runAsUser:0 for the writable
@@ -42,10 +57,17 @@ FROM base AS dev
 # an editable install with --no-deps (deps already satisfied from the lock).
 # Editable keeps hot-reload working while the install set stays reproducible.
 # hadolint ignore=DL3013
-RUN pip install --no-cache-dir debugpy \
-    && pip install --no-cache-dir --require-hashes -r requirements-dev.txt \
-    && pip install --no-cache-dir --no-deps -e .
+# Two syncs on purpose: the first installs the locked dependency set from the
+# two files copied above (a cacheable layer that survives source edits), the
+# second adds the project itself — editable, so the bind mount in Skaffold dev
+# is what runs. `--locked` verifies the lock against pyproject.toml and every
+# artifact against its recorded hash; a stale lock or a tampered wheel fails the
+# build instead of installing something else. debugpy goes in last because
+# `uv sync` makes the environment exact and would otherwise remove it again.
+RUN uv sync --locked --extra dev --no-install-project
 COPY . .
+RUN uv sync --locked --extra dev \
+    && uv pip install debugpy
 # Own /app as UID 1000 so the non-root dev pod (values-dev runAsUser:1000) can
 # hot-reload (__pycache__) and receive skaffold file-sync writes.
 RUN chown -R 1000:1000 /app
@@ -63,9 +85,12 @@ FROM base AS prod
 # the shipped image reproducible: two builds of the same commit install byte-for-
 # byte the same wheels (NFR-009 §2.3/§6.1). Hash pinning verified feasible for
 # all native wheels (weasyprint, psycopg[binary], aquacropeto) on Python 3.14.
-RUN pip install --no-cache-dir --require-hashes -r requirements.txt \
-    && pip install --no-cache-dir --no-deps .
+# Same two-step shape as dev, minus the dev extra and with the project
+# installed non-editable: the image runs the packaged copy, not a path back
+# into /app/app.
+RUN uv sync --locked --no-install-project
 COPY . .
+RUN uv sync --locked --no-editable
 # Run as a non-root numeric user. UID 1000 matches the deployment's
 # fsGroup:1000 so the mounted attachments PVC stays writable.
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -d /app -s /usr/sbin/nologin app \
@@ -77,7 +102,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 
 # Build identity (#1210) — deliberately the LAST thing in the stage. The value
 # changes on every single commit, so anything below it would be rebuilt every
-# time; here, every expensive layer above (apt, the hash-verified pip install,
+# time; here, every expensive layer above (apt, the hash-verified `uv sync`,
 # COPY, chown, useradd) is already cached and an ARG/ENV pair adds only metadata.
 #
 # CI passes it in from .github/workflows/docker-publish.yml
