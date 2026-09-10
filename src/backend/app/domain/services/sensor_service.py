@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 
+from app.common.exceptions import NotFoundError
 from app.config.settings import settings
 from app.data_access.external.ha_client import HomeAssistantClient
 from app.domain.engines.frost_warning_engine import (
@@ -18,6 +19,12 @@ from app.domain.models.sensor import Sensor
 from app.domain.models.weather import WeatherForecast
 
 logger = structlog.get_logger(__name__)
+
+#: The parent keys a :class:`Sensor` may hang off — at most one is ever set
+#: (``Sensor._at_most_one_parent``). A sensor has no ``tenant_key`` of its own,
+#: so exactly one of these is its tenant anchor, and every write route must name
+#: which one it verified (#1339).
+SENSOR_PARENT_FIELDS = ("tank_key", "site_key", "location_key")
 
 
 class SensorService:
@@ -50,10 +57,81 @@ class SensorService:
     def get_sensor(self, key: str) -> Sensor | None:
         return self._repo.get(key)
 
-    def update_sensor(self, key: str, sensor: Sensor) -> Sensor:
+    def get_sensor_in_parent(self, key: str, *, parent_field: str, parent_key: str) -> Sensor:
+        """Load a sensor, refusing one that hangs off a different parent (#1339).
+
+        A ``Sensor`` carries no ``tenant_key``; its only tenant anchor is the
+        tank / site / location it is attached to, which the route has already
+        verified against the caller's tenant. That verification is worth nothing
+        unless the sensor is then checked to actually *belong* to that parent —
+        otherwise a caller pairs their own tank key with a foreign sensor key and
+        writes across the tenant boundary. The check therefore lives here, in the
+        service, rather than being opted into at each of the six call sites: that
+        is the sibling-drift failure of #948, where two of four routes of one
+        shape were repaired and the other two stayed open for months.
+
+        ``parent_field`` and ``parent_key`` are keyword-only and have no
+        defaults, so no caller can reach this method without naming the anchor.
+
+        Args:
+            key: Document key of the sensor.
+            parent_field: One of ``tank_key``, ``site_key``, ``location_key``.
+            parent_key: Document key of that parent, already tenant-verified.
+
+        Returns:
+            The sensor.
+
+        Raises:
+            ValueError: If ``parent_field`` is not a parent field of ``Sensor``.
+            NotFoundError: If no such sensor exists, or it hangs off another
+                parent. Both are deliberately the *same* answer: a
+                distinguishable "forbidden" would confirm that the key exists
+                somewhere else in the installation.
+        """
+        if parent_field not in SENSOR_PARENT_FIELDS:
+            msg = f"parent_field must be one of {SENSOR_PARENT_FIELDS}, got {parent_field!r}"
+            raise ValueError(msg)
+        sensor = self._repo.get(key)
+        if sensor is None or getattr(sensor, parent_field) != parent_key:
+            raise NotFoundError("Sensor", key)
+        return sensor
+
+    def update_sensor(self, key: str, changes: dict, *, parent_field: str, parent_key: str) -> Sensor:
+        """Apply ``changes`` to a sensor of the given parent (REQ-005, #1339).
+
+        Only the fields named in ``changes`` are written, and the parent keys are
+        skipped even if present, so an update can never re-parent a sensor — and
+        therefore never move one into another tenant.
+
+        Args:
+            key: Document key of the sensor.
+            changes: Allow-listed field/value pairs, from a validated
+                ``SensorUpdate`` rather than a raw request body.
+            parent_field: One of ``tank_key``, ``site_key``, ``location_key``.
+            parent_key: Document key of that parent, already tenant-verified.
+
+        Returns:
+            The updated sensor.
+        """
+        sensor = self.get_sensor_in_parent(key, parent_field=parent_field, parent_key=parent_key)
+        for field, value in changes.items():
+            if field in SENSOR_PARENT_FIELDS:
+                continue
+            setattr(sensor, field, value)
         return self._repo.update(key, sensor)
 
-    def delete_sensor(self, key: str) -> bool:
+    def delete_sensor(self, key: str, *, parent_field: str, parent_key: str) -> bool:
+        """Delete a sensor of the given parent, with its edges (REQ-005, #1339).
+
+        Args:
+            key: Document key of the sensor.
+            parent_field: One of ``tank_key``, ``site_key``, ``location_key``.
+            parent_key: Document key of that parent, already tenant-verified.
+
+        Returns:
+            ``True`` when the document was removed.
+        """
+        self.get_sensor_in_parent(key, parent_field=parent_field, parent_key=parent_key)
         return self._repo.delete(key)
 
     def get_live_state_for_sensors(self, sensors: list[Sensor], *, deadline: float | None = None) -> dict:

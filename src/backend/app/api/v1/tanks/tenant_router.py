@@ -22,6 +22,7 @@ from app.api.v1.tanks.schemas import (
     MaintenanceScheduleUpdate,
     SensorCreate,
     SensorResponse,
+    SensorUpdate,
     TankCreate,
     TankFillEventCreate,
     TankFillEventResponse,
@@ -429,6 +430,44 @@ def create_sensor(
     sensor = Sensor(**body.model_dump(exclude={"tank_key"}), tank_key=key)
     created = sensor_service.create_sensor(sensor)
     return to_response(created, SensorResponse)
+
+
+@router.put("/{key}/sensors/{sensor_key}", response_model=SensorResponse)
+def update_sensor(
+    key: Annotated[str, Path(description="Document key of the tank.")],
+    sensor_key: Annotated[str, Path(description="Document key of the sensor.")],
+    body: SensorUpdate,
+    ctx: TenantContext = Depends(require_permission(ResourceType.SENSOR, Action.UPDATE)),
+    tank_service: TankService = Depends(get_tank_service),
+    sensor_service: SensorService = Depends(get_sensor_service),
+):
+    """Update a sensor attached to a tank (REQ-005 §2, #1339).
+
+    Scoped by the tank on purpose: a sensor carries no ``tenant_key``, so the
+    tank verified here *is* the tenant anchor, and the service refuses a sensor
+    that hangs off anything else.
+    """
+    tank_service.get_tank(key, tenant_key=ctx.tenant_key)
+    updated = sensor_service.update_sensor(
+        sensor_key,
+        body.model_dump(exclude_none=True),
+        parent_field="tank_key",
+        parent_key=key,
+    )
+    return to_response(updated, SensorResponse)
+
+
+@router.delete("/{key}/sensors/{sensor_key}", status_code=204)
+def delete_sensor(
+    key: Annotated[str, Path(description="Document key of the tank.")],
+    sensor_key: Annotated[str, Path(description="Document key of the sensor.")],
+    ctx: TenantContext = Depends(require_permission(ResourceType.SENSOR, Action.DELETE)),
+    tank_service: TankService = Depends(get_tank_service),
+    sensor_service: SensorService = Depends(get_sensor_service),
+):
+    """Delete a sensor of a tank, with its edges (REQ-005 §2, #1339)."""
+    tank_service.get_tank(key, tenant_key=ctx.tenant_key)
+    sensor_service.delete_sensor(sensor_key, parent_field="tank_key", parent_key=key)
 
 
 @router.post("/{key}/ec-dilution", response_model=EcDilutionResponse)

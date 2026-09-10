@@ -172,6 +172,19 @@ describe('sites endpoints — site & location sensors (tenant client)', () => {
     expect(tenantClient.post).toHaveBeenCalledWith('/sites/s1/sensors', payload);
   });
 
+  it('updateSiteSensor puts to the site-scoped sensor path', async () => {
+    tenantClient.put.mockResolvedValue({ data: { key: 'se1' } });
+    const payload = { name: 'X' } as never;
+    await sites.updateSiteSensor('s1', 'se1', payload);
+    expect(tenantClient.put).toHaveBeenCalledWith('/sites/s1/sensors/se1', payload);
+  });
+
+  it('deleteSiteSensor deletes the site-scoped sensor path', async () => {
+    tenantClient.delete.mockResolvedValue({ data: undefined });
+    await sites.deleteSiteSensor('s1', 'se1');
+    expect(tenantClient.delete).toHaveBeenCalledWith('/sites/s1/sensors/se1');
+  });
+
   it('getSiteSensorsLive gets live readings for site', async () => {
     tenantClient.get.mockResolvedValue({ data: {} });
     await sites.getSiteSensorsLive('s1');
@@ -197,6 +210,19 @@ describe('sites endpoints — site & location sensors (tenant client)', () => {
     const payload = { entity_id: 'sensor.y' } as never;
     await sites.createLocationSensor('l1', payload);
     expect(tenantClient.post).toHaveBeenCalledWith('/locations/l1/sensors', payload);
+  });
+
+  it('updateLocationSensor puts to the location-scoped sensor path', async () => {
+    tenantClient.put.mockResolvedValue({ data: { key: 'se1' } });
+    const payload = { is_active: false } as never;
+    await sites.updateLocationSensor('l1', 'se1', payload);
+    expect(tenantClient.put).toHaveBeenCalledWith('/locations/l1/sensors/se1', payload);
+  });
+
+  it('deleteLocationSensor deletes the location-scoped sensor path', async () => {
+    tenantClient.delete.mockResolvedValue({ data: undefined });
+    await sites.deleteLocationSensor('l1', 'se1');
+    expect(tenantClient.delete).toHaveBeenCalledWith('/locations/l1/sensors/se1');
   });
 
   it('getLocationSensorsLive gets live readings for location', async () => {

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 import structlog.testing
 
+from app.common.exceptions import NotFoundError
 from app.config.settings import settings
 from app.domain.models.sensor import Sensor
 from app.domain.models.site import Site
@@ -133,10 +134,106 @@ class TestCreateSensor:
 
 class TestDeleteSensor:
     def test_delete(self, service, mock_repo):
+        mock_repo.get.return_value = Sensor(_key="s1", name="EC", metric_type="ec_ms", tank_key="t1")
         mock_repo.delete.return_value = True
-        result = service.delete_sensor("s1")
+        result = service.delete_sensor("s1", parent_field="tank_key", parent_key="t1")
         assert result is True
         mock_repo.delete.assert_called_once_with("s1")
+
+
+class TestParentScopedWrites:
+    """A sensor write is anchored on its parent, because it has no tenant (#1339).
+
+    ``Sensor`` carries no ``tenant_key``; the tank / site / location it hangs off
+    is its only tenant anchor, and the route verifies *that* against the caller.
+    The check that the sensor actually belongs to the verified parent therefore
+    has to happen here — otherwise a caller pairs their own tank key with a
+    foreign sensor key and the route's verification proves nothing.
+
+    A hand-written repository double rather than ``MagicMock``: a mock answers
+    ``get`` with another mock whose ``tank_key`` is a mock too, which compares
+    unequal to everything and would make the guard *look* effective no matter
+    what it did (#1155).
+    """
+
+    class FakeRepo:
+        def __init__(self, sensors: dict[str, Sensor]) -> None:
+            self._sensors = sensors
+            self.deleted: list[str] = []
+            self.updated: list[tuple[str, Sensor]] = []
+
+        def get(self, key: str) -> Sensor | None:
+            return self._sensors.get(key)
+
+        def update(self, key: str, sensor: Sensor) -> Sensor:
+            self.updated.append((key, sensor))
+            self._sensors[key] = sensor
+            return sensor
+
+        def delete(self, key: str) -> bool:
+            self.deleted.append(key)
+            return self._sensors.pop(key, None) is not None
+
+    @pytest.fixture
+    def scoped(self):
+        repo = self.FakeRepo(
+            {
+                "mine": Sensor(_key="mine", name="EC", metric_type="ec_ms", tank_key="my-tank"),
+                "theirs": Sensor(_key="theirs", name="EC", metric_type="ec_ms", tank_key="their-tank"),
+                "on-a-site": Sensor(_key="on-a-site", name="Air", metric_type="temperature_celsius", site_key="s1"),
+            }
+        )
+        return SensorService(repo, None), repo
+
+    def test_update_writes_only_the_named_fields(self, scoped):
+        service, repo = scoped
+
+        updated = service.update_sensor(
+            "mine", {"name": "EC (new)", "is_active": False}, parent_field="tank_key", parent_key="my-tank"
+        )
+
+        assert (updated.name, updated.is_active) == ("EC (new)", False)
+        assert updated.metric_type == "ec_ms"
+        assert repo.updated[0][0] == "mine"
+
+    def test_update_cannot_re_parent_a_sensor(self, scoped):
+        """Re-parenting would move a sensor into another tenant in one PUT."""
+        service, repo = scoped
+
+        updated = service.update_sensor(
+            "mine",
+            {"name": "EC", "tank_key": "their-tank", "site_key": "s1"},
+            parent_field="tank_key",
+            parent_key="my-tank",
+        )
+
+        assert (updated.tank_key, updated.site_key) == ("my-tank", None)
+
+    def test_a_foreign_sensor_is_refused_exactly_like_a_missing_one(self, scoped):
+        """Same exception, same message — a distinguishable 403 would confirm the key exists."""
+        service, repo = scoped
+
+        with pytest.raises(NotFoundError) as foreign:
+            service.delete_sensor("theirs", parent_field="tank_key", parent_key="my-tank")
+        with pytest.raises(NotFoundError) as missing:
+            service.delete_sensor("no-such-key", parent_field="tank_key", parent_key="my-tank")
+
+        assert str(foreign.value).replace("theirs", "X") == str(missing.value).replace("no-such-key", "X")
+        assert repo.deleted == []
+
+    def test_a_sensor_of_another_parent_type_is_refused(self, scoped):
+        """A site sensor is not reachable through a tank route, and vice versa."""
+        service, _repo = scoped
+
+        with pytest.raises(NotFoundError):
+            service.update_sensor("on-a-site", {"name": "x"}, parent_field="tank_key", parent_key="s1")
+
+    def test_the_parent_field_must_be_one_a_sensor_has(self, scoped):
+        """Fail loudly rather than compare against an attribute that is not there."""
+        service, _repo = scoped
+
+        with pytest.raises(ValueError, match="parent_field"):
+            service.get_sensor_in_parent("mine", parent_field="tenant_key", parent_key="t1")
 
 
 class TestGetSensorsForSite:

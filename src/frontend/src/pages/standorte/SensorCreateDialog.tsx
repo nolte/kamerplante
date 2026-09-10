@@ -122,14 +122,29 @@ export default function SensorCreateDialog({ open, onClose, context, sensor, onS
     try {
       setSaving(true);
       if (isEdit) {
-        await tankApi.updateSensor(sensor.key, {
+        const changes = {
           name: data.name,
           metric_type: data.metric_type,
           ha_entity_id: data.ha_entity_id || null,
           unit_of_measurement: data.unit_of_measurement || null,
           mqtt_topic: data.mqtt_topic || null,
           is_active: data.is_active,
-        });
+        };
+        // Scoped by the parent, exactly like the create branch below: a sensor
+        // carries no tenant of its own, so the backend verifies the tank / site
+        // / location it hangs off and refuses a sensor that hangs off another
+        // one (#1339).
+        switch (context.parentType) {
+          case 'tank':
+            await tankApi.updateSensor(context.parentKey, sensor.key, changes);
+            break;
+          case 'site':
+            await sitesApi.updateSiteSensor(context.parentKey, sensor.key, changes);
+            break;
+          case 'location':
+            await sitesApi.updateLocationSensor(context.parentKey, sensor.key, changes);
+            break;
+        }
         notification.success(t('common.saved'));
       } else {
         const payload = {

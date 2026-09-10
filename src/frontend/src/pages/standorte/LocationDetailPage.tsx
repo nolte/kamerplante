@@ -330,10 +330,12 @@ export default function LocationDetailPage() {
   };
 
   const handleDeleteSensor = async () => {
-    if (deleteSensorKey) {
+    if (deleteSensorKey && key) {
       setDeletingSensor(true);
       try {
-        await tankApi.deleteSensor(deleteSensorKey);
+        // Scoped by the location: a sensor has no tenant of its own, so its
+        // parent is the anchor the backend verifies (#1339).
+        await api.deleteLocationSensor(key, deleteSensorKey);
         notification.success(t('pages.sensors.deleted'));
         load();
       } catch (err) {

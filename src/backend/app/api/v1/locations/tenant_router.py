@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.mapping import to_response
 from app.api.v1.locations.schemas import FrostWarningResponse, LocationCreate, LocationResponse
-from app.api.v1.tanks.schemas import LiveStateResponse, SensorCreate, SensorResponse
+from app.api.v1.tanks.schemas import LiveStateResponse, SensorCreate, SensorResponse, SensorUpdate
 from app.common.auth import get_current_tenant, require_permission
 from app.common.dependencies import get_sensor_service, get_site_service
 from app.common.openapi_responses import NOT_FOUND_RESPONSE
@@ -140,6 +140,45 @@ def create_location_sensor(
     )
     created = sensor_service.create_sensor(sensor)
     return to_response(created, SensorResponse)
+
+
+@router.put("/{key}/sensors/{sensor_key}", response_model=SensorResponse)
+def update_location_sensor(
+    key: Annotated[str, Path(description="Document key of the location.")],
+    sensor_key: Annotated[str, Path(description="Document key of the sensor.")],
+    body: SensorUpdate,
+    ctx: TenantContext = Depends(require_permission(ResourceType.SENSOR, Action.UPDATE)),
+    service: SiteService = Depends(get_site_service),
+    sensor_service: SensorService = Depends(get_sensor_service),
+):
+    """Update a sensor attached to a location (REQ-005 §2, #1339).
+
+    Scoped by the location on purpose: a sensor carries no ``tenant_key``, and
+    neither does a location — the tenant anchor is the location's site, which
+    ``_verify_location_tenant`` resolves. The service then refuses a sensor that
+    hangs off anything but this location.
+    """
+    _verify_location_tenant(key, ctx, service)
+    updated = sensor_service.update_sensor(
+        sensor_key,
+        body.model_dump(exclude_none=True),
+        parent_field="location_key",
+        parent_key=key,
+    )
+    return to_response(updated, SensorResponse)
+
+
+@router.delete("/{key}/sensors/{sensor_key}", status_code=204)
+def delete_location_sensor(
+    key: Annotated[str, Path(description="Document key of the location.")],
+    sensor_key: Annotated[str, Path(description="Document key of the sensor.")],
+    ctx: TenantContext = Depends(require_permission(ResourceType.SENSOR, Action.DELETE)),
+    service: SiteService = Depends(get_site_service),
+    sensor_service: SensorService = Depends(get_sensor_service),
+):
+    """Delete a sensor of a location, with its edges (REQ-005 §2, #1339)."""
+    _verify_location_tenant(key, ctx, service)
+    sensor_service.delete_sensor(sensor_key, parent_field="location_key", parent_key=key)
 
 
 @router.get("/{key}/sensors/live", response_model=LiveStateResponse)

@@ -373,10 +373,12 @@ export default function TankDetailPage() {
 
 
   const onDeleteSensor = async () => {
-    if (!deleteSensorKey) return;
+    if (!deleteSensorKey || !key) return;
     setDeletingSensor(true);
     try {
-      await tankApi.deleteSensor(deleteSensorKey);
+      // Scoped by the tank: a sensor has no tenant of its own, so its parent is
+      // the anchor the backend verifies (#1339).
+      await tankApi.deleteSensor(key, deleteSensorKey);
       notification.success(t('pages.tanks.sensorDeleted'));
       setDeleteSensorKey(null);
       load();
