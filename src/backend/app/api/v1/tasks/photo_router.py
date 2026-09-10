@@ -21,7 +21,20 @@ completion form stages its photos and submits the list with
 ``requires_photo`` gate reads; appending here as well would have the two writers
 disagree the moment the user removes a staged photo before submitting. The
 attachment itself is persisted and tenant-owned either way, so an abandoned
-upload is a listed, deletable attachment rather than a lost object.
+upload is a listed, deletable attachment rather than a lost object — though no
+UI reaches that list for this category yet, which is #1393.
+
+**What goes into ``photo_refs`` is the bare ``attachment_id``**, never the
+``uri`` this response also carries. NFR-013 §2.2 and AC-09 define every
+``photo_refs`` list — REQ-006's included — as a list of attachment ids, the
+shipped ``migrate_photo_refs`` migration lists ``col.TASKS`` and rewrites exactly
+the ``/attachments/{id}`` URI shape *back* to ids, and the diary sibling stores
+ids and builds the URI at render. Storing the URI would have been wrong three
+ways: a tenant rename re-derives the slug and would break every stored ref
+permanently, running the migration would rewrite the refs into ids the client
+then fetched verbatim, and the two photo features would disagree about their own
+field. ``uri`` and ``thumbnail_uris`` are here for the immediate preview, which
+needs no round trip.
 
 Permissions (REQ-024 §1a — the "Attachments" matrix row, as for plant photos):
 upload → ``Action.CREATE`` on ``ATTACHMENT``; a viewer is refused. The task is

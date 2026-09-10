@@ -16,7 +16,6 @@ import { z } from 'zod';
 import Form from '@/components/form/Form';
 import FormTextField from '@/components/form/FormTextField';
 import FormSelectField from '@/components/form/FormSelectField';
-import FormSwitchField from '@/components/form/FormSwitchField';
 import FormActions from '@/components/form/FormActions';
 import { useNotification } from '@/hooks/useNotification';
 import { useApiError } from '@/hooks/useApiError';
@@ -40,7 +39,6 @@ const schema = z.object({
   ha_entity_id: z.string().nullable(),
   unit_of_measurement: z.string().nullable(),
   mqtt_topic: z.string().nullable(),
-  is_active: z.boolean(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -72,7 +70,6 @@ export default function SensorCreateDialog({ open, onClose, context, sensor, onS
       ha_entity_id: null,
       unit_of_measurement: null,
       mqtt_topic: null,
-      is_active: true,
     },
   });
 
@@ -85,7 +82,6 @@ export default function SensorCreateDialog({ open, onClose, context, sensor, onS
           ha_entity_id: sensor.ha_entity_id,
           unit_of_measurement: sensor.unit_of_measurement ?? null,
           mqtt_topic: sensor.mqtt_topic,
-          is_active: sensor.is_active,
         });
       } else {
         reset({
@@ -94,7 +90,6 @@ export default function SensorCreateDialog({ open, onClose, context, sensor, onS
           ha_entity_id: null,
           unit_of_measurement: null,
           mqtt_topic: null,
-          is_active: true,
         });
       }
       // Load HA entities
@@ -128,7 +123,6 @@ export default function SensorCreateDialog({ open, onClose, context, sensor, onS
           ha_entity_id: data.ha_entity_id || null,
           unit_of_measurement: data.unit_of_measurement || null,
           mqtt_topic: data.mqtt_topic || null,
-          is_active: data.is_active,
         };
         // Scoped by the parent, exactly like the create branch below: a sensor
         // carries no tenant of its own, so the backend verifies the tank / site
@@ -242,13 +236,6 @@ export default function SensorCreateDialog({ open, onClose, context, sensor, onS
             control={control}
             label={t('pages.sensors.mqttTopic')}
           />
-          {isEdit && (
-            <FormSwitchField
-              name="is_active"
-              control={control}
-              label={t('pages.sensors.active')}
-            />
-          )}
           <FormActions
             onCancel={onClose}
             loading={saving}

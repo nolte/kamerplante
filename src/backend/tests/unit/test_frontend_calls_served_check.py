@@ -1,39 +1,49 @@
 """Tests for the join gate (``scripts/check_frontend_calls_served.py``).
 
 **What is under test.** The extraction and the join, driven against *constructed*
-miniature endpoint modules and route sets written into ``tmp_path`` — never
-against the real ``src/frontend``. The shipped tree is joined for real by
-``tests/unit/api/test_frontend_endpoints_are_served.py``; a second copy of that
-assertion here would go red for the same reason twice and teach nobody anything.
+miniature endpoint modules and — this is the part that had to change — a **real**
+FastAPI application built with ``include_router(prefix=…)``. The shipped tree is
+joined for real by ``tests/unit/api/test_frontend_endpoints_are_served.py``; a
+second copy of that assertion here would go red for the same reason twice and
+teach nobody anything.
+
+**Why the route-side double is gone.** It used to be a hand-written ``FakeMount``
+carrying a ``path`` attribute, and the walk under test read ``route.path``. Both
+were wrong in the same direction: FastAPI's ``_IncludedRouter`` (0.139) has **no**
+``path`` attribute at all — its prefix lives in ``include_context.prefix`` — so
+the double invented a shape production never has and the test certified output
+production never produced. That is the #947 / #1155 class exactly: a positive test
+against an impossible fixture proves nothing. Measured against the real app before
+the fix: 797 routes, **zero** carrying ``/t/{}``. After: 799 routes, 503 of them
+tenant-scoped. The tests below therefore build a real app and assert against what
+FastAPI actually mounts.
 
 **The deliberately-broken client.** :class:`TestItCanFail` reproduces the three
 call shapes #1339 measured — including ``PUT``/``DELETE /tanks/sensors/{}``
 verbatim, the paths the client actually held before this change — and asserts the
 check goes red and names each. That is this file's red-first proof: the gate is
 watched failing on the exact input it was built for, not merely passing on a tree
-that has already been repaired. A gate nobody has seen fail is a gate nobody
-knows works.
+that has already been repaired.
 
-**The extraction traps, both measured on the real tree.** The join this file
-guards was widened twice while #1339 was being fixed, because it was reporting a
-clean result over less than it claimed:
+**The extraction traps, all measured on the real tree.** The join was widened
+three times while #1339 was being fixed, because it kept reporting a clean result
+over less than it claimed:
 
 * it anchored on the literal ``client.``, so the 18 modules that call
   ``tenantClient`` / ``globalClient`` / ``apiClient`` / ``plainClient`` were never
-  scanned at all — 363 calls became 492 once that was fixed, and the extra ones
-  turned up a fourth unserved call (``POST /starter-kits/{}/apply``);
+  scanned — 363 calls became 492, and the extra ones turned up a fourth unserved
+  call (``POST /starter-kits/{}/apply``);
 * it resolved only ``const NAME = '…'`` bases, so the two nested resources whose
   base is a function (``diary.ts``, ``plantPhotos.ts``) produced eight ``{}/{}``
-  false findings.
+  false findings;
+* it required a **backtick** argument, so ``client.get('/literal')``,
+  ``client.get(BASE)`` and ``client.get(base(k))`` were dropped — 103 of 595 call
+  sites, 17 %. 492 calls became 597.
 
-Both are pinned below, because a widening that is not tested is a widening that
-the next refactor quietly reverts.
-
-**The scan-shape trap.** ``include_router`` does not flatten, so a route walk
-that reads ``app.routes`` directly finds *six* routes instead of ~790 and the
-join then reports nearly everything as unserved. :func:`test_nested_routers_are_
-walked_through_original_router` pins the walk that avoids it, on a router shaped
-like FastAPI's wrapper rather than on the real app.
+Each is pinned below, and :func:`test_no_call_site_is_silently_skipped` pins the
+*general* rule: an unsupported shape must be reported, never dropped. A scanner
+that quietly narrows its own input is the same defect class as the unserved routes
+it looks for.
 
 **Why here.** ``pytest tests/unit/`` from ``src/backend`` is a CI check, and the
 script lives outside the backend package, so it is loaded by path.
@@ -45,9 +55,9 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import Any
 
 import pytest
+from fastapi import APIRouter, FastAPI
 
 from tests.support.repo_scripts import load_repo_script
 
@@ -60,28 +70,39 @@ def write_module(directory: Path, name: str, body: str) -> Path:
     return path
 
 
-class FakeRoute:
-    """A leaf route, shaped like the attributes the walk reads."""
+def build_app() -> FastAPI:
+    """A real app mounted the way the production one is: nested prefixes.
 
-    def __init__(self, path: str, methods: set[str]) -> None:
-        self.path = path
-        self.methods = methods
-        self.endpoint = object()
+    ``/api/v1`` → ``/t/{tenant_slug}`` → ``/tanks``, plus a global resource at
+    ``/api/v1/species``. Built with the real ``include_router`` so the wrappers
+    under test are real ``_IncludedRouter`` objects.
+    """
+    tanks = APIRouter(prefix="/tanks")
 
+    @tanks.get("/{key}/sensors")
+    def _list(key: str) -> dict:  # pragma: no cover - never called
+        return {}
 
-class FakeMount:
-    """An ``include_router`` wrapper: its children hang off ``original_router``."""
+    @tanks.put("/{key}/sensors/{sensor_key}")
+    def _update(key: str, sensor_key: str) -> dict:  # pragma: no cover
+        return {}
 
-    def __init__(self, path: str, inner: Any) -> None:
-        self.path = path
-        self.endpoint = None
-        self.methods: set[str] = set()
-        self.original_router = inner
+    species = APIRouter(prefix="/species")
 
+    @species.get("")
+    def _species() -> dict:  # pragma: no cover
+        return {}
 
-class FakeRouter:
-    def __init__(self, routes: list[Any]) -> None:
-        self.routes = routes
+    tenant = APIRouter(prefix="/t/{tenant_slug}")
+    tenant.include_router(tanks)
+
+    api = APIRouter(prefix="/api/v1")
+    api.include_router(tenant)
+    api.include_router(species)
+
+    app = FastAPI()
+    app.include_router(api)
+    return app
 
 
 class TestExtraction:
@@ -90,6 +111,7 @@ class TestExtraction:
             tmp_path,
             "tanks.ts",
             """
+            import client from '../client';
             const BASE = '/tanks';
             export async function getTank(key: string) {
               const { data } = await client.get<Tank>(`${BASE}/${key}`);
@@ -108,6 +130,7 @@ class TestExtraction:
             tmp_path,
             "sensors.ts",
             """
+            import client from '../client';
             const BASE = '/tanks';
             export async function update(tankKey: string, sensorKey: string) {
               await client.put(`${BASE}/${tankKey}/sensors/${sensorKey}`, payload);
@@ -124,6 +147,7 @@ class TestExtraction:
             tmp_path,
             "exports.ts",
             """
+            import client from '../client';
             const BASE = '/exports';
             export async function download(key: string) {
               await client.get(`${BASE}/${key}?format=pdf`);
@@ -139,6 +163,7 @@ class TestExtraction:
             tmp_path,
             "typed.ts",
             """
+            import client from '../client';
             const BASE = '/things';
             export async function make() {
               const { data } = await client.post<Thing>(`${BASE}`, body);
@@ -148,39 +173,97 @@ class TestExtraction:
 
         assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [("POST", "/things")]
 
-    def test_the_call_site_line_is_reported(self, tmp_path: Path) -> None:
-        """The report has to say *where*, or a finding costs a grep to act on."""
+    def test_a_nested_generic_is_tolerated(self, tmp_path: Path) -> None:
+        """``client.get<Record<string, X>>(…)`` — one of the 103 skipped shapes."""
         write_module(
             tmp_path,
-            "lines.ts",
+            "nested.ts",
             """
-            const BASE = '/things';
-
-            export async function remove(key: string) {
-              await client.delete(`${BASE}/${key}`);
+            import client from '../client';
+            export async function stats() {
+              await client.get<Record<string, number>>('/stats');
             }
             """,
         )
 
-        (call,) = checker.collect_frontend_calls(tmp_path)
+        assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [("GET", "/stats")]
 
-        # The dedented body opens with a newline, so the call sits on line 5 of
-        # the written file — counted from the file, which is what a reader greps.
-        assert (call.line, call.module) == (5, "lines.ts")
+    def test_a_single_quoted_literal_is_resolved(self, tmp_path: Path) -> None:
+        """No backticks, no interpolation — and formerly not scanned at all."""
+        write_module(
+            tmp_path,
+            "plain.ts",
+            """
+            import client from '../client';
+            export async function refresh() {
+              await client.post('/ai/tips/refresh', null);
+            }
+            """,
+        )
+
+        assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [("POST", "/ai/tips/refresh")]
+
+    def test_a_bare_base_constant_is_resolved(self, tmp_path: Path) -> None:
+        """``client.get(BASE, { params })`` — a list route, formerly invisible."""
+        write_module(
+            tmp_path,
+            "bare.ts",
+            """
+            import client from '../client';
+            const BASE = '/activities';
+            export async function list() {
+              await client.get<Activity[]>(BASE, { params });
+            }
+            """,
+        )
+
+        assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [("GET", "/activities")]
+
+    def test_an_arrow_function_base_is_resolved(self, tmp_path: Path) -> None:
+        """A nested resource names its base as a function, because it has a parameter."""
+        write_module(
+            tmp_path,
+            "diary.ts",
+            """
+            import { tenantClient } from '../client';
+            const base = (plantInstanceKey: string) =>
+              `/plant-instances/${plantInstanceKey}/diary`;
+
+            export async function get(plantKey: string, entryKey: string) {
+              await tenantClient.get(`${base(plantKey)}/${entryKey}`);
+            }
+            """,
+        )
+
+        assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [
+            ("GET", "/plant-instances/{}/diary/{}")
+        ]
+
+    def test_a_bare_arrow_base_call_is_resolved(self, tmp_path: Path) -> None:
+        """``client.get(base(key))`` — the base *is* the whole path."""
+        write_module(
+            tmp_path,
+            "photos.ts",
+            """
+            import { tenantClient } from '../client';
+            const base = (key: string) => `/plant-instances/${key}/photos`;
+            export async function list(key: string) {
+              await tenantClient.get(base(key));
+            }
+            """,
+        )
+
+        assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [
+            ("GET", "/plant-instances/{}/photos")
+        ]
 
     def test_every_client_identifier_is_scanned_not_only_the_literal_one(self, tmp_path: Path) -> None:
-        """The gap that made this join measure a third less than it claimed.
-
-        The modules reach for five request helpers — ``client``,
-        ``tenantClient``, ``globalClient``, ``apiClient``, ``plainClient`` — and
-        the original pattern anchored on the literal ``client.``. That silently
-        skipped 18 of 60 endpoint modules, ``sites.ts`` among them, so a call
-        added there could never be reported.
-        """
+        """The gap that made this join measure a third less than it claimed."""
         write_module(
             tmp_path,
             "many.ts",
             """
+            import client from '../client';
             const BASE = '/things';
             export async function a(k: string) { await client.get(`${BASE}/${k}`); }
             export async function b(k: string) { await tenantClient.put(`${BASE}/${k}`, x); }
@@ -198,29 +281,26 @@ class TestExtraction:
             "POST",
         }
 
-    def test_an_arrow_function_base_is_resolved(self, tmp_path: Path) -> None:
-        """A nested resource names its base as a function, because the base has a parameter.
-
-        Left unresolved, every call in ``diary.ts`` / ``plantPhotos.ts``
-        normalises to ``{}/{}`` and is reported unserved — eight false findings,
-        and a false finding is what turns a gate into a list of pre-approvals.
-        """
+    def test_the_call_site_line_is_reported(self, tmp_path: Path) -> None:
+        """The report has to say *where*, or a finding costs a grep to act on."""
         write_module(
             tmp_path,
-            "diary.ts",
+            "lines.ts",
             """
-            const base = (plantInstanceKey: string) =>
-              `/plant-instances/${plantInstanceKey}/diary`;
+            import client from '../client';
+            const BASE = '/things';
 
-            export async function get(plantKey: string, entryKey: string) {
-              await tenantClient.get(`${base(plantKey)}/${entryKey}`);
+            export async function remove(key: string) {
+              await client.delete(`${BASE}/${key}`);
             }
             """,
         )
 
-        assert [(c.method, c.path) for c in checker.collect_frontend_calls(tmp_path)] == [
-            ("GET", "/plant-instances/{}/diary/{}")
-        ]
+        (call,) = checker.collect_frontend_calls(tmp_path)
+
+        # The dedented body opens with a newline, so the call sits on line 6 of
+        # the written file — counted from the file, which is what a reader greps.
+        assert (call.line, call.module) == (6, "lines.ts")
 
     def test_a_missing_directory_is_an_error_and_not_an_empty_scan(self, tmp_path: Path) -> None:
         """An empty operand must never read as "everything is served"."""
@@ -228,65 +308,186 @@ class TestExtraction:
             checker.collect_frontend_calls(tmp_path / "gone")
 
 
-class TestRouteWalk:
-    def test_nested_routers_are_walked_through_original_router(self) -> None:
-        app = FakeRouter(
-            [
-                FakeRoute("/health", {"GET"}),
-                FakeMount(
-                    "/api/v1/t/{tenant_slug}",
-                    FakeRouter([FakeRoute("/tanks/{key}/sensors/{sensor_key}", {"PUT", "DELETE"})]),
-                ),
-            ]
+class TestNothingIsSilentlySkipped:
+    """The check on the checker: an unsupported shape is reported, not dropped."""
+
+    def test_a_shape_the_extractor_cannot_resolve_is_reported(self, tmp_path: Path) -> None:
+        write_module(
+            tmp_path,
+            "weird.ts",
+            """
+            import client from '../client';
+            export async function odd(url: string) {
+              await client.get(buildSomeUrl(url) + suffix);
+            }
+            """,
         )
 
-        assert checker.collect_mounted_routes(app) == {
-            ("GET", "/health"),
-            ("PUT", "/api/v1/t/{}/tanks/{}/sensors/{}"),
-            ("DELETE", "/api/v1/t/{}/tanks/{}/sensors/{}"),
+        unresolved = checker.unresolved_call_sites(tmp_path)
+
+        assert [u.module for u in unresolved] == ["weird.ts"]
+        assert "client.get(" in unresolved[0].source
+
+    def test_a_resolvable_module_reports_nothing(self, tmp_path: Path) -> None:
+        write_module(
+            tmp_path,
+            "fine.ts",
+            """
+            import client from '../client';
+            const BASE = '/things';
+            export async function list() { await client.get(BASE); }
+            """,
+        )
+
+        assert checker.unresolved_call_sites(tmp_path) == []
+
+    def test_an_unresolved_site_fails_the_report(self, tmp_path: Path, capsys) -> None:
+        """Red, not merely printed — otherwise the invariant is decoration."""
+        write_module(
+            tmp_path,
+            "weird.ts",
+            """
+            import client from '../client';
+            export async function odd(u: string) { await client.get(makeUrl(u) + s); }
+            """,
+        )
+
+        code = checker.report([], [], 10, checker.unresolved_call_sites(tmp_path))
+
+        assert code == checker.EXIT_FINDINGS
+        assert "could not resolve" in capsys.readouterr().err
+
+
+class TestRouteWalk:
+    """Driven against a real FastAPI app, because the wrapper shape is the trap."""
+
+    def test_the_mount_prefixes_are_recovered(self) -> None:
+        mounted = checker.collect_mounted_routes(build_app())
+
+        assert ("GET", "/api/v1/t/{}/tanks/{}/sensors") in mounted
+        assert ("PUT", "/api/v1/t/{}/tanks/{}/sensors/{}") in mounted
+        assert ("GET", "/api/v1/species") in mounted
+
+    def test_the_included_router_wrapper_really_has_no_path_attribute(self) -> None:
+        """Pins *why* the walk reads ``include_context.prefix``.
+
+        The previous walk did ``prefix + getattr(route, "path", "")`` and the
+        test double invented the missing attribute, so both agreed on a shape
+        FastAPI does not produce. If a future FastAPI grows ``path`` on the
+        wrapper this test goes red and the walk can be simplified — deliberately,
+        rather than by accident.
+        """
+        app = build_app()
+        wrappers = [r for r in app.routes if hasattr(r, "original_router")]
+
+        assert wrappers, "no _IncludedRouter wrapper — include_router changed shape"
+        assert not hasattr(wrappers[0], "path")
+
+        # And the prefix that *is* there is not the cumulative one, which is the
+        # second thing a reader would guess wrong: `include_context.prefix` holds
+        # the prefix of the router that performed the `include_router`, while the
+        # included router's own prefix sits on `original_router.prefix` and is
+        # already baked into its leaf paths. Accumulating the former down the
+        # chain is therefore correct, and adding the latter would double-count.
+        outer = wrappers[0]
+        assert outer.include_context.prefix == ""
+        assert outer.original_router.prefix == "/api/v1"
+        inner = next(r for r in outer.original_router.routes if hasattr(r, "original_router"))
+        assert inner.include_context.prefix == "/api/v1"
+        assert inner.original_router.prefix == "/t/{tenant_slug}"
+
+    def test_a_flat_read_of_the_same_app_finds_almost_nothing(self) -> None:
+        """Pins the shortcut that fails, on the real object graph."""
+        app = build_app()
+
+        flat = {
+            (method, route.path)
+            for route in app.routes
+            if getattr(route, "endpoint", None) is not None
+            for method in getattr(route, "methods", ()) or ()
         }
 
-    def test_a_flat_read_of_the_same_app_would_find_almost_nothing(self) -> None:
-        """Pins *why* the walk exists, by measuring the shortcut that fails.
+        # FastAPI's own /docs, /redoc and /openapi.json are the only leaves at
+        # the top level; every application route hides behind a wrapper.
+        assert not any("/tanks" in path or "/species" in path for _method, path in flat)
+        # The flat read finds not one application route; the walk finds all three.
+        walked = checker.collect_mounted_routes(app)
+        assert {path for _method, path in walked} >= {
+            "/api/v1/species",
+            "/api/v1/t/{}/tanks/{}/sensors",
+            "/api/v1/t/{}/tanks/{}/sensors/{}",
+        }
 
-        Reading only the top level of the real app yields six routes; here it
-        yields one. Either way the join then reports live calls as unserved.
-        """
-        app = FakeRouter(
-            [
-                FakeRoute("/health", {"GET"}),
-                FakeMount("/api/v1", FakeRouter([FakeRoute("/tanks", {"GET"})])),
-            ]
-        )
+    def test_a_route_without_methods_is_skipped(self) -> None:
+        class Router:
+            routes: list = []
 
-        flat = {(method, route.path) for route in app.routes if route.endpoint is not None for method in route.methods}
-
-        assert flat == {("GET", "/health")}
-        assert len(checker.collect_mounted_routes(app)) == 2
-
-    def test_a_websocket_style_route_without_methods_is_skipped(self) -> None:
-        route = FakeRoute("/ws", set())
-        route.methods = set()
-
-        assert checker.collect_mounted_routes(FakeRouter([route])) == set()
+        assert checker.collect_mounted_routes(Router()) == set()
 
 
 class TestJoin:
-    def test_a_call_matches_under_the_tenant_prefix(self) -> None:
-        mounted = {("PUT", "/api/v1/t/{}/tanks/{}/sensors/{}")}
+    def test_a_tenant_client_call_matches_a_tenant_route(self) -> None:
+        mounted = checker.collect_mounted_routes(build_app())
 
-        assert checker.is_served("PUT", "/tanks/{}/sensors/{}", mounted)
+        assert checker.is_served("PUT", "/tanks/{}/sensors/{}", mounted, checker.SCOPE_TENANT)
 
-    def test_a_call_matches_under_the_bare_api_prefix(self) -> None:
-        mounted = {("GET", "/api/v1/species")}
+    def test_a_global_client_call_matches_a_global_route(self) -> None:
+        mounted = checker.collect_mounted_routes(build_app())
 
-        assert checker.is_served("GET", "/species", mounted)
+        assert checker.is_served("GET", "/species", mounted, checker.SCOPE_GLOBAL)
+
+    def test_a_tenant_route_issued_through_the_global_client_is_reported(self) -> None:
+        """The 404 the prefix-less join could not see.
+
+        ``/tanks/{key}/sensors`` exists only under ``/api/v1/t/{slug}``. Called
+        through the default client the request goes to ``/api/v1/tanks/…`` and
+        answers 404 — and with every mount prefix lost, both spellings looked
+        identical to this check.
+        """
+        mounted = checker.collect_mounted_routes(build_app())
+        call = checker.Call(
+            method="GET", path="/tanks/{}/sensors", module="tanks.ts", line=1, scope=checker.SCOPE_GLOBAL
+        )
+
+        assert not checker.is_served(call.method, call.path, mounted, call.scope)
+        assert checker.find_unserved([call], mounted) == [call]
+
+    def test_the_scope_is_read_from_the_import_alias_not_the_identifier(self, tmp_path: Path) -> None:
+        """24 modules bind the *tenant* client to the local name ``client``."""
+        write_module(
+            tmp_path,
+            "tanks.ts",
+            """
+            import { tenantClient as client } from '../client';
+            const BASE = '/tanks';
+            export async function list() { await client.get(BASE); }
+            """,
+        )
+
+        (call,) = checker.collect_frontend_calls(tmp_path)
+
+        assert call.scope == checker.SCOPE_TENANT
+
+    def test_a_default_import_is_the_global_scope(self, tmp_path: Path) -> None:
+        write_module(
+            tmp_path,
+            "species.ts",
+            """
+            import client from '../client';
+            const BASE = '/species';
+            export async function list() { await client.get(BASE); }
+            """,
+        )
+
+        (call,) = checker.collect_frontend_calls(tmp_path)
+
+        assert call.scope == checker.SCOPE_GLOBAL
 
     def test_the_method_is_part_of_the_match(self) -> None:
         """A path served for GET does not make its DELETE reachable."""
-        mounted = {("GET", "/api/v1/t/{}/tanks/{}/sensors")}
+        mounted = checker.collect_mounted_routes(build_app())
 
-        assert not checker.is_served("DELETE", "/tanks/{}/sensors", mounted)
+        assert not checker.is_served("DELETE", "/tanks/{}/sensors", mounted, checker.SCOPE_TENANT)
 
     def test_the_placeholder_count_is_part_of_the_match(self) -> None:
         """``/tanks/sensors/{}`` and ``/tanks/{}/sensors/{}`` are different paths.
@@ -294,15 +495,16 @@ class TestJoin:
         This is the shape #1339 measured: the client's two-segment path looked
         close enough to a served three-segment one to survive review.
         """
-        mounted = {("PUT", "/api/v1/t/{}/tanks/{}/sensors/{}")}
+        mounted = checker.collect_mounted_routes(build_app())
 
-        assert not checker.is_served("PUT", "/tanks/sensors/{}", mounted)
+        assert not checker.is_served("PUT", "/tanks/sensors/{}", mounted, checker.SCOPE_TENANT)
 
 
 class TestItCanFail:
     """The gate, watched failing on the three calls #1339 actually measured."""
 
     UNSERVED_CLIENT = """
+        import { tenantClient as client } from '../client';
         const BASE = '/tanks';
         export async function updateSensor(sensorKey: string) {
           await client.put(`${BASE}/sensors/${sensorKey}`, payload);
@@ -312,6 +514,7 @@ class TestItCanFail:
         }
     """
     TASKS_CLIENT = """
+        import { tenantClient as client } from '../client';
         const BASE = '/tasks';
         export async function uploadTaskPhoto(key: string) {
           await client.post(`${BASE}/${key}/photos`, formData);
@@ -343,6 +546,7 @@ class TestItCanFail:
             tmp_path,
             "tanks.ts",
             """
+            import { tenantClient as client } from '../client';
             const BASE = '/tanks';
             export async function updateSensor(tankKey: string, sensorKey: string) {
               await client.put(`${BASE}/${tankKey}/sensors/${sensorKey}`, payload);
@@ -368,7 +572,7 @@ class TestItCanFail:
         code = checker.report(calls, checker.find_unserved(calls, self.MOUNTED_BEFORE), len(self.MOUNTED_BEFORE))
 
         assert code == checker.EXIT_FINDINGS
-        assert "PUT /tanks/sensors/{} (tanks.ts:" in capsys.readouterr().err
+        assert "PUT /tanks/sensors/{}" in capsys.readouterr().err
 
     def test_a_clean_tree_exits_zero(self, tmp_path: Path) -> None:
         write_module(tmp_path, "tanks.ts", "const BASE = '/tanks';\n")

@@ -159,7 +159,7 @@ describe('SensorCreateDialog', () => {
     expect(screen.getByText(i18n.t('pages.sensors.add'))).toBeInTheDocument();
     // No HA entities -> the manual entity-id field is shown, no autocomplete.
     expect(await screen.findByTestId('form-field-ha_entity_id')).toBeInTheDocument();
-    // Add mode hides the is_active switch.
+    // No is_active switch in either mode — see the edit test below for why.
     expect(screen.queryByTestId('form-field-is_active')).not.toBeInTheDocument();
   });
 
@@ -233,8 +233,13 @@ describe('SensorCreateDialog', () => {
     const { onSaved } = mount({ sensor: EDIT_SENSOR });
     await screen.findByTestId('sensor-create-dialog');
     expect(screen.getByText(i18n.t('pages.sensors.edit'))).toBeInTheDocument();
-    // Edit mode reveals the is_active switch and pre-fills the name.
-    expect(screen.getByTestId('form-field-is_active')).toBeInTheDocument();
+    // The edit form pre-fills the name and offers NO is_active switch. It used
+    // to: unticking it wrote `is_active: false`, and every read filters
+    // `is_active == true` (find_by_tank/site/location; no get-by-key, no
+    // `include_inactive`), so the sensor vanished from the only surfaces that
+    // list it with no way back through the API (#1339 review). A control whose
+    // one direction is irreversible is worse than no control.
+    expect(screen.queryByTestId('form-field-is_active')).not.toBeInTheDocument();
     expect(screen.getByTestId('form-field-name').querySelector('input')).toHaveValue('Existing Probe');
     await user.click(screen.getByTestId('form-submit-button'));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());

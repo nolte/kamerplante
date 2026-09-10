@@ -136,7 +136,7 @@ class TestDeleteSensor:
     def test_delete(self, service, mock_repo):
         mock_repo.get.return_value = Sensor(_key="s1", name="EC", metric_type="ec_ms", tank_key="t1")
         mock_repo.delete.return_value = True
-        result = service.delete_sensor("s1", parent_field="tank_key", parent_key="t1")
+        result = service.delete_sensor("s1", parent_field="tank_key", parent_key="t1", tenant_key="tenant-a")
         assert result is True
         mock_repo.delete.assert_called_once_with("s1")
 
@@ -155,6 +155,16 @@ class TestParentScopedWrites:
     unequal to everything and would make the guard *look* effective no matter
     what it did (#1155).
     """
+
+    class FakeObservationRepo:
+        """Records the tenant-scoped readings delete the sensor delete must make."""
+
+        def __init__(self) -> None:
+            self.deleted: list[tuple[str, str]] = []
+
+        def delete_by_sensor(self, sensor_key: str, tenant_key: str) -> int:
+            self.deleted.append((sensor_key, tenant_key))
+            return 42
 
     class FakeRepo:
         def __init__(self, sensors: dict[str, Sensor]) -> None:
@@ -183,10 +193,11 @@ class TestParentScopedWrites:
                 "on-a-site": Sensor(_key="on-a-site", name="Air", metric_type="temperature_celsius", site_key="s1"),
             }
         )
-        return SensorService(repo, None), repo
+        observations = self.FakeObservationRepo()
+        return SensorService(repo, None, observation_repo=observations), repo, observations
 
     def test_update_writes_only_the_named_fields(self, scoped):
-        service, repo = scoped
+        service, repo, _observations = scoped
 
         updated = service.update_sensor(
             "mine", {"name": "EC (new)", "is_active": False}, parent_field="tank_key", parent_key="my-tank"
@@ -198,7 +209,7 @@ class TestParentScopedWrites:
 
     def test_update_cannot_re_parent_a_sensor(self, scoped):
         """Re-parenting would move a sensor into another tenant in one PUT."""
-        service, repo = scoped
+        service, repo, _observations = scoped
 
         updated = service.update_sensor(
             "mine",
@@ -211,26 +222,74 @@ class TestParentScopedWrites:
 
     def test_a_foreign_sensor_is_refused_exactly_like_a_missing_one(self, scoped):
         """Same exception, same message — a distinguishable 403 would confirm the key exists."""
-        service, repo = scoped
+        service, repo, _observations = scoped
 
         with pytest.raises(NotFoundError) as foreign:
-            service.delete_sensor("theirs", parent_field="tank_key", parent_key="my-tank")
+            service.delete_sensor("theirs", parent_field="tank_key", parent_key="my-tank", tenant_key="t1")
         with pytest.raises(NotFoundError) as missing:
-            service.delete_sensor("no-such-key", parent_field="tank_key", parent_key="my-tank")
+            service.delete_sensor("no-such-key", parent_field="tank_key", parent_key="my-tank", tenant_key="t1")
 
         assert str(foreign.value).replace("theirs", "X") == str(missing.value).replace("no-such-key", "X")
         assert repo.deleted == []
 
     def test_a_sensor_of_another_parent_type_is_refused(self, scoped):
         """A site sensor is not reachable through a tank route, and vice versa."""
-        service, _repo = scoped
+        service, _repo, _observations = scoped
 
         with pytest.raises(NotFoundError):
             service.update_sensor("on-a-site", {"name": "x"}, parent_field="tank_key", parent_key="s1")
 
+    def test_deleting_a_sensor_deletes_its_readings(self, scoped):
+        """A sensor's TimescaleDB series is personal data, not housekeeping.
+
+        NFR-011 / REQ-025 §DSFA name CO2 and motion series as presence-revealing.
+        Removing the document while the series stays behind leaves that trace
+        with nothing in the UI pointing at it — undiscoverable, and therefore
+        undeletable through any surface a user can reach.
+        ``delete_readings_for_sensor`` / ``delete_by_sensor`` had existed with
+        **zero** callers (#1339 review).
+        """
+        service, repo, observations = scoped
+
+        service.delete_sensor("mine", parent_field="tank_key", parent_key="my-tank", tenant_key="tenant-a")
+
+        assert observations.deleted == [("mine", "tenant-a")]
+        assert repo.deleted == ["mine"]
+
+    def test_a_refused_delete_touches_no_readings(self, scoped):
+        """The guard runs first — a foreign key must not wipe anybody's series."""
+        service, repo, observations = scoped
+
+        with pytest.raises(NotFoundError):
+            service.delete_sensor("theirs", parent_field="tank_key", parent_key="my-tank", tenant_key="tenant-a")
+
+        assert observations.deleted == []
+        assert repo.deleted == []
+
+    def test_a_service_without_an_observation_repo_still_deletes(self, scoped):
+        """Optional dependency: no TimescaleDB must not block the sensor delete."""
+        _service, repo, _observations = scoped
+        bare = SensorService(repo, None)
+
+        assert bare.delete_sensor("mine", parent_field="tank_key", parent_key="my-tank", tenant_key="tenant-a")
+
+    def test_an_explicit_null_clears_a_field(self, scoped):
+        """`exclude_unset`, not `exclude_none` — the clear must reach the document.
+
+        The routes used to dump with ``exclude_none``, so the ``null`` the edit
+        dialog sends for an emptied ``ha_entity_id`` never arrived: 200, old
+        value kept (#1339 review). The service half is that a ``None`` present in
+        ``changes`` is written rather than skipped.
+        """
+        service, _repo, _observations = scoped
+
+        updated = service.update_sensor("mine", {"ha_entity_id": None}, parent_field="tank_key", parent_key="my-tank")
+
+        assert updated.ha_entity_id is None
+
     def test_the_parent_field_must_be_one_a_sensor_has(self, scoped):
         """Fail loudly rather than compare against an attribute that is not there."""
-        service, _repo = scoped
+        service, _repo, _observations = scoped
 
         with pytest.raises(ValueError, match="parent_field"):
             service.get_sensor_in_parent("mine", parent_field="tenant_key", parent_key="t1")

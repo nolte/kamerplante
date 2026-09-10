@@ -15,8 +15,11 @@ import PhotoUpload from '@/components/common/PhotoUpload';
  * fundament, so two things are asserted here that a `{ url }`-shaped static file
  * did not need:
  *
- * - the component carries the returned **`uri`** into `photo_refs` (the old
- *   shape's `url` is gone, and reading it would push `undefined`);
+ * - the component carries the returned **`attachment_id`** into `photo_refs`,
+ *   not the `uri`: NFR-013 §2.2 / AC-09 define every `photo_refs` list as a list
+ *   of attachment ids, the shipped `migrate_photo_refs` job rewrites the URI
+ *   shape *back* to ids, and a stored URI bakes in a tenant slug that a rename
+ *   re-derives — which would break every task photo permanently;
  * - the preview renders through `AuthImage`, because the attachment URI is
  *   permission-gated and a native `<img src>` cannot send the Bearer header.
  */
@@ -46,7 +49,7 @@ describe('PhotoUpload (REQ-006 — task photo upload)', () => {
     vi.clearAllMocks();
   });
 
-  it('uploads to the task photo route and reports the attachment uri', async () => {
+  it('uploads to the task photo route and stores the bare attachment id', async () => {
     const user = userEvent.setup();
     let requestedUrl: string | null = null;
     server.use(
@@ -63,12 +66,17 @@ describe('PhotoUpload (REQ-006 — task photo upload)', () => {
     await user.upload(input as HTMLInputElement, new File(['x'], 'p.jpg', { type: 'image/jpeg' }));
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
-    // The uri, not `undefined` — the response no longer carries a `url` field.
-    expect(onChange).toHaveBeenCalledWith([ATTACHMENT_URI]);
+    // The id, not the URI: `photo_refs` is a list of attachment ids (NFR-013
+    // §2.2 / AC-09). Asserting the exact value is what makes this red against a
+    // component that stored `result.uri`.
+    expect(onChange).toHaveBeenCalledWith(['att-1']);
+    expect(onChange.mock.calls[0][0][0]).not.toContain('/attachments/');
     expect(requestedUrl).toBe(`/api/v1/t/${TENANT}/tasks/tk1/photos`);
   });
 
-  it('renders an existing photo through the authenticated image path', async () => {
+  it('renders a stored id by building the attachment URI at render time', async () => {
+    // The stored ref is a bare id; the URI is rebuilt from the *current* slug,
+    // which is exactly what survives a tenant rename.
     let fetched: string | null = null;
     server.use(
       http.get(ATTACHMENT_URI, ({ request }) => {
@@ -78,7 +86,7 @@ describe('PhotoUpload (REQ-006 — task photo upload)', () => {
     );
 
     renderWithProviders(
-      <PhotoUpload taskKey="tk1" photoRefs={[ATTACHMENT_URI]} onChange={vi.fn()} />,
+      <PhotoUpload taskKey="tk1" photoRefs={['att-1']} onChange={vi.fn()} />,
     );
 
     const img = (await screen.findByTestId('photo-preview-0')) as HTMLImageElement;
@@ -124,7 +132,7 @@ describe('PhotoUpload (REQ-006 — task photo upload)', () => {
     const onChange = vi.fn();
 
     renderWithProviders(
-      <PhotoUpload taskKey="tk1" photoRefs={[ATTACHMENT_URI]} onChange={onChange} />,
+      <PhotoUpload taskKey="tk1" photoRefs={['att-1']} onChange={onChange} />,
     );
 
     await user.click(await screen.findByTestId('photo-remove-0'));

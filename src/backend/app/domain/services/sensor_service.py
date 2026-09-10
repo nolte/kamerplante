@@ -12,6 +12,7 @@ from app.domain.engines.frost_warning_engine import (
     pick_air_temperature,
 )
 from app.domain.engines.live_state import derive_single_value_view
+from app.domain.interfaces.observation_repository import IObservationRepository
 from app.domain.interfaces.sensor_repository import ISensorRepository
 from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.interfaces.weather_forecast_repository import IWeatherForecastRepository
@@ -34,6 +35,7 @@ class SensorService:
         ha_client: HomeAssistantClient | None,
         weather_forecast_repo: IWeatherForecastRepository | None = None,
         site_repo: ISiteRepository | None = None,
+        observation_repo: IObservationRepository | None = None,
     ) -> None:
         self._repo = repo
         self._ha_client = ha_client
@@ -41,6 +43,12 @@ class SensorService:
         # when either is absent — the reactive path never depends on them.
         self._weather_forecast_repo = weather_forecast_repo
         self._site_repo = site_repo
+        # The time-series side of a sensor (#1339 review). Optional because the
+        # TimescaleDB connection is optional: without it the repository is the
+        # null implementation, and every other SensorService caller predates
+        # this argument. Deleting a sensor must still take its readings with it
+        # — see :meth:`delete_sensor`.
+        self._observation_repo = observation_repo
 
     def create_sensor(self, sensor: Sensor) -> Sensor:
         return self._repo.create(sensor)
@@ -120,18 +128,39 @@ class SensorService:
             setattr(sensor, field, value)
         return self._repo.update(key, sensor)
 
-    def delete_sensor(self, key: str, *, parent_field: str, parent_key: str) -> bool:
-        """Delete a sensor of the given parent, with its edges (REQ-005, #1339).
+    def delete_sensor(self, key: str, *, parent_field: str, parent_key: str, tenant_key: str) -> bool:
+        """Delete a sensor with its edges *and its readings* (REQ-005, #1339).
+
+        The readings are not housekeeping. A sensor's TimescaleDB series is
+        personal data under NFR-011: CO2 and motion series reveal when somebody
+        was in the room, which is why REQ-025 §DSFA names exactly those. Deleting
+        the sensor document while its series stays behind leaves that trace with
+        nothing left in the UI pointing at it — undiscoverable, and therefore
+        undeletable through any surface a user can reach.
+
+        ``ObservationService.delete_readings_for_sensor`` and
+        ``IObservationRepository.delete_by_sensor`` had existed with **zero**
+        callers; this is the caller. The delete is ordered readings-first, so a
+        failure there aborts before the document goes and the operation stays
+        retryable; the other order would strand the series permanently.
+
+        A service assembled without an observation repository (the DI factory
+        always supplies one — the null implementation when TimescaleDB is absent)
+        skips the readings step rather than failing the delete.
 
         Args:
             key: Document key of the sensor.
             parent_field: One of ``tank_key``, ``site_key``, ``location_key``.
             parent_key: Document key of that parent, already tenant-verified.
+            tenant_key: Owning tenant, for the tenant-scoped readings delete.
 
         Returns:
             ``True`` when the document was removed.
         """
         self.get_sensor_in_parent(key, parent_field=parent_field, parent_key=parent_key)
+        if self._observation_repo is not None:
+            deleted = self._observation_repo.delete_by_sensor(key, tenant_key)
+            logger.info("sensor_readings_deleted", sensor_key=key, readings=deleted)
         return self._repo.delete(key)
 
     def get_live_state_for_sensors(self, sensors: list[Sensor], *, deadline: float | None = None) -> dict:

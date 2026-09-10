@@ -450,7 +450,11 @@ def update_sensor(
     tank_service.get_tank(key, tenant_key=ctx.tenant_key)
     updated = sensor_service.update_sensor(
         sensor_key,
-        body.model_dump(exclude_none=True),
+        # `exclude_unset`, not `exclude_none`: an explicit `null` is how the
+        # client *clears* `ha_entity_id` / `mqtt_topic` / `unit_of_measurement`,
+        # and `exclude_none` dropped exactly those keys — the write returned 200
+        # and kept the old value (#1339 review).
+        body.model_dump(exclude_unset=True),
         parent_field="tank_key",
         parent_key=key,
     )
@@ -467,7 +471,7 @@ def delete_sensor(
 ):
     """Delete a sensor of a tank, with its edges (REQ-005 §2, #1339)."""
     tank_service.get_tank(key, tenant_key=ctx.tenant_key)
-    sensor_service.delete_sensor(sensor_key, parent_field="tank_key", parent_key=key)
+    sensor_service.delete_sensor(sensor_key, parent_field="tank_key", parent_key=key, tenant_key=ctx.tenant_key)
 
 
 @router.post("/{key}/ec-dilution", response_model=EcDilutionResponse)

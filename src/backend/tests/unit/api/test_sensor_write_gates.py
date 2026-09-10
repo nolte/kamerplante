@@ -44,6 +44,9 @@ from app.common.exceptions import ForbiddenError
 from app.core.permissions import Action, ResourceType
 from app.domain.models.sensor import Sensor
 from app.domain.models.tenant_context import TenantContext
+from tests.support.repo_scripts import load_repo_script
+
+mounted_routes = load_repo_script("check_frontend_calls_served").collect_mounted_routes
 
 #: (handler, expected parent field, expected action) — one row per new route.
 _WRITE_ROUTES = [
@@ -79,8 +82,16 @@ class RecordingSensorService:
         )
         return Sensor(_key=key, name="EC", metric_type="ec_ms", **{parent_field: parent_key})
 
-    def delete_sensor(self, key: str, *, parent_field: str, parent_key: str) -> bool:
-        self.calls.append({"op": "delete", "key": key, "parent_field": parent_field, "parent_key": parent_key})
+    def delete_sensor(self, key: str, *, parent_field: str, parent_key: str, tenant_key: str) -> bool:
+        self.calls.append(
+            {
+                "op": "delete",
+                "key": key,
+                "parent_field": parent_field,
+                "parent_key": parent_key,
+                "tenant_key": tenant_key,
+            }
+        )
         return True
 
 
@@ -106,29 +117,22 @@ class ParentService:
 
 class TestTheRoutesExistOnEveryParent:
     def test_all_six_are_mounted(self) -> None:
+        """Walked with the shipped joiner, not a second copy of its logic.
+
+        This file and the task-photo one each carried a byte-for-byte copy of the
+        ``original_router`` walk, and both read ``route.path`` on a wrapper that
+        has none — so the copies agreed with each other and produced every route
+        *relative*. One implementation, in the script the required join gate
+        already drives.
+        """
         from app.main import app
 
-        mounted: set[tuple[str, str]] = set()
-
-        def walk(router: Any, prefix: str = "") -> None:
-            # `include_router` does not flatten — read `app.routes` directly and
-            # you find six routes instead of ~800, and the scan looks like it
-            # worked. The wrappers carry their children on `original_router`.
-            for route in getattr(router, "routes", []):
-                path = prefix + getattr(route, "path", "")
-                if getattr(route, "endpoint", None) is not None:
-                    for method in getattr(route, "methods", ()) or ():
-                        mounted.add((method, path))
-                inner = getattr(route, "original_router", None) or getattr(route, "app", None)
-                if inner is not None and hasattr(inner, "routes"):
-                    walk(inner, path)
-
-        walk(app)
+        mounted = mounted_routes(app)
         assert len(mounted) > 500, "the route walk collapsed — this assertion would pass vacuously"
 
         for parent in ("tanks", "sites", "locations"):
             for method in ("PUT", "DELETE"):
-                assert (method, f"/{parent}/{{key}}/sensors/{{sensor_key}}") in mounted, (
+                assert (method, f"/api/v1/t/{{}}/{parent}/{{}}/sensors/{{}}") in mounted, (
                     f"{method} on {parent} sensors is missing — the pair must exist on every parent"
                 )
 
@@ -206,6 +210,10 @@ class TestTheParentReachesTheService:
         assert tanks.verified == [("tank-1", "tenant-a")]
         assert sensors.calls[0]["parent_field"] == "tank_key"
         assert sensors.calls[0]["parent_key"] == "tank-1"
+        # The tenant reaches the service too: the readings delete inside it is
+        # tenant-scoped, and a route that forgot to pass it would silently widen
+        # that delete (#1339 review).
+        assert sensors.calls[0]["tenant_key"] == "tenant-a"
 
     def test_site_routes_name_the_site(self) -> None:
         sensors, sites = RecordingSensorService(), ParentService()
@@ -225,6 +233,7 @@ class TestTheParentReachesTheService:
         assert sites.verified == [("site-1", "tenant-a"), ("site-1", "tenant-a")]
         assert [c["parent_field"] for c in sensors.calls] == ["site_key", "site_key"]
         assert {c["parent_key"] for c in sensors.calls} == {"site-1"}
+        assert sensors.calls[1]["tenant_key"] == "tenant-a"
 
     def test_location_routes_name_the_location_and_verify_its_site(self) -> None:
         sensors, sites = RecordingSensorService(), ParentService()
@@ -246,6 +255,28 @@ class TestTheParentReachesTheService:
         assert sites.verified == [("site-of-loc", "tenant-a"), ("site-of-loc", "tenant-a")]
         assert [c["parent_field"] for c in sensors.calls] == ["location_key", "location_key"]
         assert {c["parent_key"] for c in sensors.calls} == {"loc-1"}
+        assert sensors.calls[1]["tenant_key"] == "tenant-a"
+
+    def test_an_explicit_null_reaches_the_service(self) -> None:
+        """The route must forward a *clear*, not drop it.
+
+        `SensorCreateDialog` sends `ha_entity_id: data.ha_entity_id || null`, so
+        emptying the field posts an explicit `null`. With `exclude_none` the key
+        never left the route: the write returned 200 and kept the old value
+        (#1339 review). `exclude_unset` is the semantics the schema documents.
+        """
+        sensors, tanks = RecordingSensorService(), ParentService()
+
+        tanks_router.update_sensor(
+            "tank-1",
+            "sensor-1",
+            SensorUpdate(name="EC", ha_entity_id=None, mqtt_topic=None),
+            ctx=_ctx(TenantRole.GROWER),
+            tank_service=tanks,
+            sensor_service=sensors,
+        )
+
+        assert sensors.calls[0]["changes"] == {"name": "EC", "ha_entity_id": None, "mqtt_topic": None}
 
     def test_an_unset_field_is_not_written(self) -> None:
         """`exclude_none` — a PATCH-shaped body must not blank the other fields."""

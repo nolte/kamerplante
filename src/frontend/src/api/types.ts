@@ -1987,13 +1987,24 @@ export interface SensorCreate {
   tank_key?: string | null;
 }
 
+/**
+ * Editable fields of a sensor.
+ *
+ * `is_active` is deliberately absent, although `Sensor` carries it: every read
+ * filters `is_active == true` and there is no get-by-key or `include_inactive`
+ * route, so writing `false` would make the sensor vanish from the only surfaces
+ * that list it, with no way back through the API (#1339 review). Mirrors
+ * `SensorUpdate` in `app/api/v1/tanks/schemas.py`.
+ *
+ * An explicit `null` clears a value; an omitted key leaves it untouched (the
+ * routes dump with `exclude_unset`).
+ */
 export interface SensorUpdate {
   name?: string;
   metric_type?: string;
   ha_entity_id?: string | null;
   unit_of_measurement?: string | null;
   mqtt_topic?: string | null;
-  is_active?: boolean;
 }
 
 /**

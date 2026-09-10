@@ -38,6 +38,9 @@ from app.common.exceptions import ForbiddenError, InvalidFileTypeError, NotFound
 from app.core.permissions import Action
 from app.domain.models.attachment import Attachment
 from app.domain.models.tenant_context import TenantContext
+from tests.support.repo_scripts import load_repo_script
+
+mounted_routes = load_repo_script("check_frontend_calls_served").collect_mounted_routes
 
 
 def _ctx(role: TenantRole = TenantRole.GROWER) -> TenantContext:
@@ -106,31 +109,40 @@ def services() -> tuple[FakeTaskService, FakeAttachmentService]:
 
 class TestTheRouteIsMounted:
     def test_post_tasks_key_photos_exists(self) -> None:
+        """Walked with the shipped joiner, not a second copy of its logic.
+
+        Both this file and the sensor-gate file used to carry a byte-for-byte
+        copy of the ``original_router`` walk, and both copies read ``route.path``
+        on a wrapper that has none — so they agreed with each other and with
+        nothing FastAPI produces. One implementation, in the script the required
+        join gate already drives.
+        """
         from app.main import app
 
-        mounted: set[tuple[str, str]] = set()
-
-        def walk(router: Any, prefix: str = "") -> None:
-            for route in getattr(router, "routes", []):
-                path = prefix + getattr(route, "path", "")
-                if getattr(route, "endpoint", None) is not None:
-                    for method in getattr(route, "methods", ()) or ():
-                        mounted.add((method, path))
-                inner = getattr(route, "original_router", None) or getattr(route, "app", None)
-                if inner is not None and hasattr(inner, "routes"):
-                    walk(inner, path)
-
-        walk(app)
+        mounted = mounted_routes(app)
 
         assert len(mounted) > 500, "the route walk collapsed — this assertion would pass vacuously"
-        assert ("POST", "/tasks/{key}/photos") in mounted
+        assert ("POST", "/api/v1/t/{}/tasks/{}/photos") in mounted
 
 
 class TestTheGate:
-    def test_the_route_uses_the_attachment_create_gate(self) -> None:
-        dependency = inspect.signature(photo_router.upload_task_photo).parameters["ctx"].default.dependency
+    def test_the_route_gates_on_create_and_not_on_read(self) -> None:
+        """Asserts the *action*, because the closure names are all ``_dependency``.
 
-        assert dependency.__name__ == require_attachment_permission(Action.CREATE).__name__
+        Comparing ``__name__`` against ``require_attachment_permission(CREATE)``
+        — which is what stood here — compares two closures that are both called
+        ``_dependency``: it is equally true for ``READ``, so it could not fail.
+        The action is what decides whether a viewer gets in, so the action is
+        what gets driven.
+        """
+        dependency = inspect.signature(photo_router.upload_task_photo).parameters["ctx"].default.dependency
+        read_gate = require_attachment_permission(Action.READ)
+
+        # A viewer may READ attachments and may not CREATE them (REQ-024 §4), so
+        # this pair distinguishes the two gates by behaviour.
+        assert read_gate(ctx=_ctx(TenantRole.VIEWER)).role is TenantRole.VIEWER
+        with pytest.raises(ForbiddenError):
+            dependency(ctx=_ctx(TenantRole.VIEWER))
 
     def test_a_viewer_is_refused(self) -> None:
         dependency = inspect.signature(photo_router.upload_task_photo).parameters["ctx"].default.dependency

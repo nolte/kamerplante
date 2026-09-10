@@ -35,7 +35,10 @@ export default function PhotoUpload({ taskKey, photoRefs, onChange, disabled }: 
       try {
         for (const file of Array.from(files)) {
           const result = await taskApi.uploadTaskPhoto(taskKey, file);
-          newRefs.push(result.uri);
+          // The bare attachment id, never `result.uri`: `photo_refs` is a list
+          // of attachment ids (NFR-013 §2.2 / AC-09), and a stored URI would
+          // bake in the tenant slug — which a rename re-derives (#1339 review).
+          newRefs.push(result.attachment_id);
         }
         onChange(newRefs);
         notification.success(t('pages.tasks.photoUploaded'));
@@ -92,7 +95,7 @@ export default function PhotoUpload({ taskKey, photoRefs, onChange, disabled }: 
               }}
             >
               <AuthImage
-                uri={ref}
+                uri={taskApi.taskPhotoUri(ref)}
                 alt={t('pages.tasks.photoAlt', { index: i + 1 })}
                 data-testid={`photo-preview-${i}`}
               />

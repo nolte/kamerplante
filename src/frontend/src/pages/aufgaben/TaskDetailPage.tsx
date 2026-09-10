@@ -943,7 +943,7 @@ export default function TaskDetailPage() {
                   {task.photo_refs.map((ref, i) => (
                     <AuthImage
                       key={ref}
-                      uri={ref}
+                      uri={taskApi.taskPhotoUri(ref)}
                       alt={t('pages.tasks.photoAlt', { index: i + 1 })}
                       width={120}
                       height={120}
