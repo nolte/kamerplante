@@ -42,7 +42,7 @@ services:
 
   # ── Valkey (Redis-compatible) ────────────────────────────
   valkey:
-    image: valkey/valkey:9-alpine@sha256:a174b894902bd3367e330d47cc2054367dc4917701776aaf336f41d83b65ec7a
+    image: valkey/valkey:9-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 5s
@@ -51,7 +51,7 @@ services:
 
   # ── TimescaleDB (optional) ─────────────────────────────────
   timescaledb:
-    image: timescale/timescaledb:2.29.2-pg16@sha256:289d55704b1b3ee8263cd3805c6930f9cd54506835a8f19f9b85dad17d5c5a8a
+    image: timescale/timescaledb:2.30.0-pg16@sha256:8adb9b8d8cb56195a1bd66fafb211e57dbc5ea44c0972b7be4dd10b87684bb96
     profiles: ["timescaledb"]
     environment:
       POSTGRES_DB: kamerplanter_sensors_e2e
