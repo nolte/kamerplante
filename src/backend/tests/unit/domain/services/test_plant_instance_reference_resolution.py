@@ -25,11 +25,11 @@ Two properties are asserted here rather than described in a comment:
 
 from __future__ import annotations
 
-import inspect
 from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
+import structlog.testing
 
 from app.common.enums import SiteType
 from app.common.exceptions import NotFoundError, ValidationError
@@ -509,17 +509,251 @@ def test_resolution_is_skipped_when_the_collaborators_are_unwired() -> None:
     assert created.substrate_key == "sub-ghost"
 
 
-def test_the_dependency_wiring_supplies_both_resolvers() -> None:
-    """Absence check: the production factory must pass the collaborators.
+# NOTE — the absence check that stood here read
+# ``inspect.getsource(get_plant_instance_service)`` and asserted the two kwargs
+# appeared as substrings. Measured during the #1349 review: commenting the two
+# lines out leaves the substrings in the source, and the check **passed** on
+# wiring that was not wired. It is replaced by
+# ``test_the_dependency_wiring_produces_a_service_with_every_catalogue_resolver``
+# below, which builds the real factory and inspects the resulting object.
 
-    Without this, the whole suite above would keep passing while the deployed
-    service resolved nothing — the guard-wired-in-tests-only failure. Read from
-    the source rather than by calling the factory, which would open a database
-    handle.
+
+# ── Pre-merge review, finding 1: "" is a reference, not an absence ───────
+#
+# ``if not value: continue`` read an empty string as "the caller supplied no
+# reference". It is not: ``species_key: str`` is *required*, so ``""`` is a value
+# the caller chose, and the row it produces points at a species that does not
+# exist. Measured against the pre-review branch: ``POST`` with
+# ``"species_key": ""`` answered **201**.
+
+
+def test_an_empty_species_key_is_resolved_and_refused_rather_than_skipped() -> None:
+    service, plant_repo = _service()
+
+    with pytest.raises(NotFoundError):
+        service.create_plant(_plant(species_key=""))
+
+    plant_repo.create.assert_not_called()
+
+
+def test_an_empty_substrate_key_is_resolved_and_refused_rather_than_skipped() -> None:
+    service, plant_repo = _service()
+
+    with pytest.raises(NotFoundError):
+        service.create_plant(_plant(substrate_key=""))
+
+    plant_repo.create.assert_not_called()
+
+
+def test_an_update_cannot_strip_a_species_to_the_empty_string() -> None:
+    """The ``PUT`` half: ``""`` differs from the stored value, so it is a change —
+    and a change to a key that resolves to nothing."""
+    service, plant_repo = _service(species={"sp-own": _species("sp-own")})
+    plant_repo.get_or_raise.return_value = _plant(key="p1", species_key="sp-own")
+
+    with pytest.raises(NotFoundError):
+        service.update_plant("p1", _plant(key="p1", species_key=""))
+
+    plant_repo.update.assert_not_called()
+
+
+def test_clearing_an_optional_reference_to_none_is_still_never_refused() -> None:
+    """The control that keeps the rule above from becoming "refuse everything falsy".
+
+    ``None`` means *no reference*; ``""`` means *this reference*, spelled badly.
+    Only the first may skip resolution — a ``PUT`` clears nullable fields by
+    omission and must not be refused for it.
+    """
+    service, plant_repo = _service(substrates={"sub-own": _substrate("sub-own")})
+    plant_repo.get_or_raise.return_value = _plant(key="p1", substrate_key="sub-own")
+
+    updated = service.update_plant("p1", _plant(key="p1", substrate_key=None))
+
+    assert updated.substrate_key is None
+    plant_repo.update.assert_called_once()
+
+
+# ── Pre-merge review, finding 2: the placement chain ────────────────────
+#
+# Each placement key was anchored on its own parent's tenant *in isolation*, so
+# three keys that each belong to the caller could still describe an impossible
+# plant. Measured against the pre-review branch: ``site_key=site-a``,
+# ``location_key`` under ``site-b`` and a slot in that same foreign-to-the-site
+# location answered **201**.
+
+
+def _two_site_service():
+    return _service(
+        sites={"site-a": _site("site-a"), "site-b": _site("site-b")},
+        locations={"loc-a": _location("loc-a", "site-a"), "loc-b": _location("loc-b", "site-b")},
+        slots={"slot-a": _slot("slot-a", "loc-a"), "slot-b": _slot("slot-b", "loc-b")},
+    )
+
+
+def test_a_location_under_a_different_site_than_the_plants_own_is_refused() -> None:
+    """Both objects are the caller's own — this is a shape error, not a disclosure,
+    so it is a 422 and names what is wrong (#970: a well-formed request the domain
+    rejects)."""
+    service, plant_repo = _two_site_service()
+
+    with pytest.raises(ValidationError) as exc:
+        service.create_plant(_plant(site_key="site-a", location_key="loc-b"))
+
+    assert exc.value.status_code == 422
+    plant_repo.create.assert_not_called()
+
+
+def test_a_slot_in_a_different_location_than_the_plants_own_is_refused() -> None:
+    service, plant_repo = _two_site_service()
+
+    with pytest.raises(ValidationError) as exc:
+        service.create_plant(_plant(site_key="site-a", location_key="loc-a", slot_key="slot-b"), skip_validation=True)
+
+    assert exc.value.status_code == 422
+    plant_repo.create.assert_not_called()
+
+
+def test_the_full_measured_incoherent_placement_is_refused() -> None:
+    """The exact triple the review measured a 201 for."""
+    service, plant_repo = _two_site_service()
+
+    with pytest.raises(ValidationError):
+        service.create_plant(_plant(site_key="site-a", location_key="loc-b", slot_key="slot-b"), skip_validation=True)
+
+    plant_repo.create.assert_not_called()
+
+
+def test_a_coherent_placement_chain_is_accepted() -> None:
+    """Control. Without it, a chain check that refused every placement would pass
+    all three assertions above."""
+    service, plant_repo = _two_site_service()
+
+    created = service.create_plant(_plant(site_key="site-a", location_key="loc-a", slot_key="slot-a"))
+
+    assert (created.site_key, created.location_key, created.slot_key) == ("site-a", "loc-a", "slot-a")
+    plant_repo.create.assert_called_once()
+
+
+def test_a_slot_without_a_location_derives_the_location_from_the_slot() -> None:
+    """Decision: derive, do not refuse.
+
+    A slot *is* in exactly one location, so the pair cannot disagree when only one
+    of them was supplied — the row is completed rather than rejected, and the
+    completion is the slot's own parent, never the caller's assertion about it.
+    Refusing instead would break ``PATCH {"slot_key": …}`` on a plant that has no
+    location yet, which is the ordinary way a plant is first placed.
+    """
+    service, plant_repo = _two_site_service()
+
+    created = service.create_plant(_plant(slot_key="slot-b"), skip_validation=True)
+
+    assert created.location_key == "loc-b"
+    plant_repo.create.assert_called_once()
+
+
+def test_changing_only_the_site_re_checks_the_location_that_did_not_change() -> None:
+    """The update half, and the reason the chain is not evaluated field by field.
+
+    ``location_key`` is unchanged, so a per-field changed-only rule skips it — and
+    the plant ends up on ``site-b`` while sitting in a location of ``site-a``. The
+    chain is therefore re-run whenever *any* of the three placement keys moved.
+    """
+    service, plant_repo = _two_site_service()
+    plant_repo.get_or_raise.return_value = _plant(key="p1", site_key="site-a", location_key="loc-a")
+
+    with pytest.raises(ValidationError):
+        service.update_plant("p1", _plant(key="p1", site_key="site-b", location_key="loc-a"))
+
+    plant_repo.update.assert_not_called()
+
+
+def test_an_update_that_touches_no_placement_key_costs_no_placement_read() -> None:
+    """Control for the rule above: a rename must still not dial the site repo."""
+    service, plant_repo = _two_site_service()
+    stored = _plant(key="p1", site_key="site-a", location_key="loc-a")
+    plant_repo.get_or_raise.return_value = stored
+    reads: list[str] = []
+    service._site_repo.get_location_by_key = lambda key: (  # type: ignore[method-assign]
+        reads.append(key) or _location("loc-a", "site-a")
+    )
+
+    service.update_plant("p1", _plant(key="p1", site_key="site-a", location_key="loc-a", plant_name="renamed"))
+
+    assert reads == []
+    plant_repo.update.assert_called_once()
+
+
+# ── Pre-merge review, finding 5: the dispatch cannot drift ──────────────
+
+
+def test_every_dispatched_reference_field_exists_on_the_plant_model() -> None:
+    """A renamed or removed field must break the test, not silently stop being checked.
+
+    The previous dispatch read ``getattr(plant, field, None)`` and fell through an
+    ``if/elif`` chain with no ``else``, so a field renamed on the model — or a name
+    that never matched one — resolved to ``None``, was skipped, and left the guard
+    inert while every test above stayed green.
+    """
+    service, _ = _service()
+    declared = set(PlantInstanceService._CATALOGUE_REFERENCE_FIELDS) | set(PlantInstanceService._PLACEMENT_FIELDS)
+
+    assert declared <= set(PlantInstance.model_fields)
+    assert declared, "the dispatch must not be empty"
+    # A resolver that no declared field dispatches to would never run; a declared
+    # field with no resolver is reported at the skip point, never silently dropped.
+    assert set(service._reference_resolvers) == set(PlantInstanceService._CATALOGUE_REFERENCE_FIELDS)
+    assert all(callable(resolver) for resolver in service._reference_resolvers.values())
+
+
+def test_the_dependency_wiring_produces_a_service_with_every_catalogue_resolver() -> None:
+    """Absence check, on the constructed object rather than on the source text.
+
+    The previous version substring-matched ``inspect.getsource`` and therefore
+    stayed green when the two kwargs were *commented out* — a wiring check that
+    passes on unwired wiring. Building the real factory against a stub ``get_db``
+    asserts the outcome instead: a resolver is inserted only when its collaborator
+    was actually supplied.
     """
     from app.common import dependencies
 
-    source = inspect.getsource(dependencies.get_plant_instance_service)
+    original_get_db = dependencies.get_db
+    dependencies.get_db = lambda: MagicMock()  # type: ignore[assignment]
+    try:
+        service = dependencies.get_plant_instance_service()
+    finally:
+        dependencies.get_db = original_get_db  # type: ignore[assignment]
 
-    assert "substrate_service=get_substrate_service()" in source
-    assert "species_service=get_species_service()" in source
+    assert set(service._reference_resolvers) == {"species_key", "substrate_batch_key", "substrate_key"}
+
+
+def test_a_reference_that_goes_unchecked_because_of_an_unwired_collaborator_is_logged() -> None:
+    """The escape stays available for pure-domain construction, but it is announced.
+
+    Same shape as ``owned_reference_check_skipped_tenantless_row``: a check that
+    does not run must leave a trace, or "unwired" and "wired" are indistinguishable
+    from the outside. Logged at the **skip**, not at construction — a service that
+    is never asked to resolve anything has skipped nothing, and a warning per
+    constructed object would drown the one that matters.
+    """
+    plant_repo = MagicMock()
+    plant_repo.create.side_effect = lambda p: p
+    service = PlantInstanceService(plant_repo, FakeSiteRepo(), MagicMock(), MagicMock())
+
+    with structlog.testing.capture_logs() as logs:
+        service.create_plant(_plant(substrate_key="sub-ghost", species_key="sp-ghost"))
+
+    warnings = [entry for entry in logs if entry.get("event") == "reference_resolver_unwired"]
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert sorted(warnings[0]["fields"]) == ["species_key", "substrate_key"]
+    assert warnings[0]["tenant_key"] == TENANT
+
+
+def test_a_wired_service_logs_nothing_when_every_reference_resolves() -> None:
+    """Control for the warning above: it must fire on a gap, not on every write."""
+    service, _ = _service(substrates={"sub-own": _substrate("sub-own")})
+
+    with structlog.testing.capture_logs() as logs:
+        service.create_plant(_plant(substrate_key="sub-own"))
+
+    assert [entry for entry in logs if entry.get("event") == "reference_resolver_unwired"] == []

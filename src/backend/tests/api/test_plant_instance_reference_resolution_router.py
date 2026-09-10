@@ -37,7 +37,7 @@ from app.common.enums import SiteType, TenantRole
 from app.common.error_handlers import app_error_handler
 from app.common.exceptions import KamerplanterError, NotFoundError
 from app.domain.models.plant_instance import PlantInstance
-from app.domain.models.site import Site
+from app.domain.models.site import Location, Site, Slot
 from app.domain.models.species import Species
 from app.domain.models.substrate import Substrate
 from app.domain.models.tenant_context import TenantContext
@@ -94,17 +94,34 @@ class _SpeciesRepo:
         return False
 
 
+#: Two sites of the *same* tenant, one location and one slot under each. Both
+#: halves of every pair are legitimately the caller's own, which is what makes
+#: the incoherent combination a shape error rather than an ownership question.
+_SITES: dict[str, Site] = {
+    "site_own": Site(key="site_own", tenant_key=TENANT, name="own", type=SiteType.INDOOR, climate_zone=""),
+    "site_other": Site(key="site_other", tenant_key=TENANT, name="other", type=SiteType.INDOOR, climate_zone=""),
+}
+#: NOTE the empty ``tenant_key`` — that is what a stored Location really looks
+#: like (#706), which is why the guard anchors on the parent site.
+_LOCATIONS: dict[str, Location] = {
+    "loc_own": Location(key="loc_own", name="loc_own", site_key="site_own", area_m2=1.0),
+    "loc_other": Location(key="loc_other", name="loc_other", site_key="site_other", area_m2=1.0),
+}
+_SLOTS: dict[str, Slot] = {
+    "slot_own": Slot(key="slot_own", slot_id="TENT01_A1", location_key="loc_own"),
+    "slot_other": Slot(key="slot_other", slot_id="TENT02_A1", location_key="loc_other"),
+}
+
+
 class _SiteRepo:
     def get_site_by_key(self, key: str) -> Site | None:
-        if key == "site_own":
-            return Site(key="site_own", tenant_key=TENANT, name="own", type=SiteType.INDOOR, climate_zone="")
-        return None
+        return _SITES.get(key)
 
-    def get_location_by_key(self, key: str):
-        return None
+    def get_location_by_key(self, key: str) -> Location | None:
+        return _LOCATIONS.get(key)
 
-    def get_slot_by_key(self, key: str):
-        return None
+    def get_slot_by_key(self, key: str) -> Slot | None:
+        return _SLOTS.get(key)
 
     def update_slot(self, key, slot):  # pragma: no cover - no slot case here
         return slot
@@ -272,3 +289,88 @@ def test_patching_an_unrelated_field_dials_no_reference(client: TestClient, plan
 
     assert response.status_code == 200, response.text
     plant_repo.update.assert_called_once()
+
+
+# ── Pre-merge review, finding 1: "" is refused at the boundary ──────────
+#
+# ``PlantCreate.species_key`` was a bare ``str`` with no ``min_length``, and the
+# service read ``if not value: continue`` — so an empty string was neither
+# validated nor resolved. Measured against the pre-review branch:
+#
+#     POST {"species_key": ""}                -> 201, stored species_key = ''
+#     PUT  {"species_key": ""}                -> 200, species stripped
+#
+# The boundary is the right place: ``""`` is not a well-formed key for any of
+# these fields, and 422 with the field name says so far more usefully than the
+# 404 the service would otherwise raise.
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "payload", "field"),
+    [
+        ("post", _COLLECTION, _body(species_key=""), "species_key"),
+        ("post", _COLLECTION, _body(substrate_key=""), "substrate_key"),
+        ("post", _COLLECTION, _body(location_key=""), "location_key"),
+        ("put", _ITEM, _body(species_key=""), "species_key"),
+        ("patch", _ITEM, {"species_key": ""}, "species_key"),
+        ("patch", _ITEM, {"substrate_batch_key": ""}, "substrate_batch_key"),
+    ],
+)
+def test_an_empty_reference_key_is_refused_with_422(
+    client: TestClient, plant_repo: MagicMock, method: str, url: str, payload: dict, field: str
+) -> None:
+    response = getattr(client, method)(url, json=payload)
+
+    assert response.status_code == 422, response.text
+    assert field in response.text
+    plant_repo.create.assert_not_called()
+    plant_repo.update.assert_not_called()
+
+
+def test_an_explicit_null_still_clears_an_optional_reference(client: TestClient, plant_repo: MagicMock) -> None:
+    """The control: ``min_length`` must constrain the string arm of the union only.
+
+    ``PATCH {"substrate_key": null}`` is the documented way to clear a reference
+    (#1098). If the constraint had been put on the union it would refuse ``null``
+    too, and the only way to unset a field would be gone.
+    """
+    response = client.patch(_ITEM, json={"substrate_key": None})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["substrate_key"] is None
+    plant_repo.update.assert_called_once()
+
+
+# ── Pre-merge review, finding 2: the placement chain, over HTTP ─────────
+#
+# Measured against the pre-review branch:
+#
+#     POST {"site_key": "site_own", "location_key": "loc_other",
+#           "slot_key": "slot_other"}          -> 201
+#
+# Every one of those three keys belongs to the caller. Read one at a time they
+# all pass; read as a chain they describe a plant in a location that is not in
+# its site, in a slot that is not in its location.
+
+
+def test_a_placement_chain_that_does_not_hold_together_is_refused_with_422(
+    client: TestClient, plant_repo: MagicMock
+) -> None:
+    """422, not 404: the caller can see all three objects, so naming the
+    inconsistency discloses nothing (the #970 boundary convention — a well-formed
+    request the domain rejects)."""
+    response = client.post(
+        _COLLECTION, json=_body(site_key="site_own", location_key="loc_other", slot_key="slot_other")
+    )
+
+    assert response.status_code == 422, response.text
+    plant_repo.create.assert_not_called()
+
+
+def test_a_coherent_placement_chain_is_still_accepted(client: TestClient, plant_repo: MagicMock) -> None:
+    """Control — without it a chain check that refused every placement would pass."""
+    response = client.post(_COLLECTION, json=_body(site_key="site_own", location_key="loc_own", slot_key="slot_own"))
+
+    assert response.status_code == 201, response.text
+    assert response.json()["location_key"] == "loc_own"
+    plant_repo.create.assert_called_once()

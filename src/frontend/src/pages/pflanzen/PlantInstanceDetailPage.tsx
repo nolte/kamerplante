@@ -636,6 +636,11 @@ export default function PlantInstanceDetailPage() {
         instance_id: plant.instance_id,
         species_key: plant.species_key,
         ...payload,
+        // The "—" option on every key select carries value '', so an unset
+        // reference reaches here as an empty string. '' is not a key: the API
+        // refuses it with 422 (min_length=1) precisely because it used to be
+        // stored as a dangling reference. null is how this API says "none".
+        cultivar_key: payload.cultivar_key || null,
         site_key: payload.site_key || null,
         location_key: payload.location_key || null,
         slot_key: payload.slot_key || null,
