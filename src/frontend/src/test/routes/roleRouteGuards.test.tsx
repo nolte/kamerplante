@@ -1,16 +1,23 @@
-import { isValidElement, type ReactElement, type ReactNode } from 'react';
+import { type ReactElement, type ReactNode } from 'react';
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
-import type { RouteObject } from 'react-router-dom';
 import { router } from '@/routes/AppRoutes';
 import {
   ROLE_GUARDED_ROUTES,
   ACTION_GATED_ROUTES,
   UNGATED_ROUTES,
+  PLATFORM_ADMIN_ROUTES,
 } from '@/routes/roleGuardedRoutes';
 import RequireRole from '@/auth/RequireRole';
 import PageTitle from '@/components/layout/PageTitle';
-import { createStoreWithTenantRole, createTestStore, renderWithProviders } from '@/test/helpers';
+import {
+  createStoreWithTenantRole,
+  createTestStore,
+  findElementOfType,
+  findFlatRoute,
+  flattenRoutes,
+  renderWithProviders,
+} from '@/test/helpers';
 import type { TenantRole } from '@/api/types';
 
 /**
@@ -30,37 +37,23 @@ import type { TenantRole } from '@/api/types';
  * a conditional, a moved `</Route>`) is invisible to the text scan and caught here.
  */
 
-interface FlatRoute {
-  path: string;
-  element: ReactNode;
+const FLAT_ROUTES = flattenRoutes(router.routes);
+
+function routeFor(path: string) {
+  return findFlatRoute(FLAT_ROUTES, path);
 }
 
-function flatten(routes: RouteObject[]): FlatRoute[] {
-  const out: FlatRoute[] = [];
-  for (const route of routes) {
-    if (route.path) {
-      out.push({ path: route.path, element: route.element });
-    }
-    if (route.children) {
-      out.push(...flatten(route.children));
-    }
-  }
-  return out;
-}
-
-const FLAT_ROUTES = flatten(router.routes);
-
-function routeFor(path: string): FlatRoute {
-  const match = FLAT_ROUTES.find((r) => r.path === path);
-  if (!match) throw new Error(`Route "${path}" is not registered in AppRoutes.tsx`);
-  return match;
-}
-
-/** The `min` a route's element declares, or `null` when it carries no guard. */
+/**
+ * The `min` a route's element declares, or `null` when it carries no guard.
+ *
+ * Searches the whole element subtree rather than the outermost tag, so a guard
+ * nested under another wrapper still counts — the hole the #1336 review found in
+ * the static checker's text scan, mirrored here on purpose.
+ */
 function declaredMinimum(element: ReactNode): TenantRole | null {
-  if (!isValidElement(element)) return null;
-  if (element.type !== RequireRole) return null;
-  return (element as ReactElement<{ min: TenantRole }>).props.min;
+  const guard = findElementOfType(element, RequireRole);
+  if (!guard) return null;
+  return (guard as ReactElement<{ min: TenantRole }>).props.min;
 }
 
 const GUARDED_ENTRIES = Object.entries(ROLE_GUARDED_ROUTES);
@@ -89,6 +82,9 @@ describe('AppRoutes — role-guard placement (#1261)', () => {
     // guarded part of it.
     const decided = [
       ...Object.keys(ROLE_GUARDED_ROUTES),
+      // The second axis (#1336) is a fourth bucket of the same partition: every
+      // route carries exactly one decision, whichever question it answers.
+      ...Object.keys(PLATFORM_ADMIN_ROUTES),
       ...ACTION_GATED_ROUTES,
       ...UNGATED_ROUTES,
     ];

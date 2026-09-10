@@ -31,6 +31,13 @@ So the unit of enforcement is not "the guarded routes" but **every** route:
    dropped wrapper is the bug returning, and a wrapper on an undeclared route is
    a guard *stricter* than the API, which takes read access away from members the
    API admits — the mirror-image defect.
+3a. **The same pairing on the platform-admin axis** (#1336): a route in
+   ``PLATFORM_ADMIN_ROUTES`` carries ``<RequirePlatformAdmin>`` and no other
+   route does. The two axes are checked separately because REQ-049 §2.4 keeps
+   them disjoint — ``require_platform_admin`` consults no domain role and
+   ``require_tenant_role`` consults no platform attribute, so a wrapper of one
+   kind never substitutes for the other, and reading them as one bucket would let
+   a route be "guarded" by the wrapper that answers the wrong question.
 4. **No bucket entry names a route that no longer exists.** Without this rule the
    table decays into a set of pre-approvals: a deleted route leaves its entry
    behind, and a later route re-using the path inherits a decision nobody made
@@ -56,8 +63,20 @@ limit is the reason the decision table records the gate it mirrors verbatim per
 guarded route: a reviewer can check the pairing by reading, which is the part a
 script cannot do for them.
 
-Traces to #1261, REQ-049 §2.3, and the 2026-08-08 issue-pattern audit's
-"guard opt-in at the call site" cluster.
+**A route needing both axes is read as carrying both.** The scan walks every JSX
+tag inside ``element={…}``, so a nested ``<RequirePlatformAdmin><RequireRole …>``
+pair registers on both axes and each is then paired against its own bucket. An
+earlier version read only the outermost tag and this paragraph claimed refusal
+for the nested case; measured, it exited 0 with no finding — the inner wrapper
+was invisible, so a route declared in one bucket and wrapped in the other passed.
+No route needs both today, and one cannot be *declared* on both either: the
+buckets are a partition, so two entries for one route are ``decided-twice``. That
+is deliberate — the day a route genuinely needs both, this check goes red and the
+table gets a shape somebody chose, instead of a wrapper quietly satisfying a
+bucket that asks a different question.
+
+Traces to #1261 and #1336, REQ-049 §2.3/§2.4, and the 2026-08-08 issue-pattern
+audit's "guard opt-in at the call site" cluster.
 """
 
 from __future__ import annotations
@@ -93,12 +112,16 @@ ROUTE_PATH = re.compile(r'\bpath="([^"]+)"')
 
 ROUTE_ELEMENT = re.compile(r"\belement=\{")
 
-#: The first JSX element inside ``element={…}`` — the route's outermost wrapper.
+#: Every JSX opening tag inside ``element={…}``. The scan reads *all* of them,
+#: not just the outermost, so a nested guard pair is seen as both guards.
 ELEMENT_HEAD = re.compile(r"<(\w+)([^>]*)>")
 
 MIN_PROP = re.compile(r'\bmin="(\w+)"')
 
 GUARD_COMPONENT = "RequireRole"
+
+#: The platform-admin wrapper (#1336) — the second, disjoint axis.
+PLATFORM_GUARD_COMPONENT = "RequirePlatformAdmin"
 
 
 class RouteGuardCheckError(Exception):
@@ -124,10 +147,12 @@ class Decisions:
     guarded: dict[str, str]
     action_gated: tuple[str, ...]
     ungated: tuple[str, ...]
+    #: Route -> the ``require_platform_admin`` operation it mirrors (#1336).
+    platform_admin: dict[str, str]
 
     @property
     def all_routes(self) -> list[str]:
-        return [*self.guarded, *self.action_gated, *self.ungated]
+        return [*self.guarded, *self.action_gated, *self.ungated, *self.platform_admin]
 
 
 def _read(path: Path) -> str:
@@ -160,23 +185,96 @@ def _strip_comments(source: str) -> str:
     return _TOKEN.sub(lambda match: "" if match.group(1) else match.group(0), source)
 
 
+#: The key of one ``'route': { … }`` entry, up to and including its ``{``.
+_RECORD_KEY = re.compile(
+    r"""(?:'(?P<q>[^']+)'|"(?P<dq>[^"]+)"|(?P<bare>[A-Za-z_$][\w$]*))\s*:\s*\{"""
+)
+
+
+def _balanced_span(
+    source: str, start: int, opener: str, closer: str
+) -> tuple[str, int]:
+    """Return the text inside the ``opener…closer`` pair at ``start``, and its end.
+
+    Quoted spans are skipped, so a delimiter *inside a string* neither opens nor
+    closes anything. That is not hypothetical here: a recorded gate names a real
+    operation and a real path carries its parameters —
+    ``DELETE /api/v1/admin/platform/users/{key}``. Read with ``[^}]*`` the entry
+    body ended at that brace, a ``gate`` written after it was never seen, and the
+    check exited 2 claiming the entry declares none.
+
+    Args:
+        source: the text to scan.
+        start: index of the opening delimiter.
+        opener: the opening delimiter, e.g. ``{``.
+        closer: the matching closing delimiter, e.g. ``}``.
+
+    Returns:
+        The inner text, and the index just past the closing delimiter.
+
+    Raises:
+        RouteGuardCheckError: the delimiters are unbalanced.
+    """
+    depth = 0
+    index = start
+    while index < len(source):
+        char = source[index]
+        if char in "'\"`":
+            index += 1
+            while index < len(source) and source[index] != char:
+                index += 1
+        elif char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : index], index + 1
+        index += 1
+    raise RouteGuardCheckError(f"unbalanced `{opener}` starting at offset {start}")
+
+
+def _record_bucket(source: str, name: str, field: str) -> dict[str, str]:
+    """Parse a ``Record<string, {…}>`` bucket into ``route -> field value``.
+
+    Both record-shaped buckets are read the same way: ``ROLE_GUARDED_ROUTES``
+    for its ``min`` and ``PLATFORM_ADMIN_ROUTES`` for its ``gate``. Sharing the
+    parse rather than forking it keeps the two axes from drifting on how a table
+    is *read* — they already differ on what they mean, which is enough.
+
+    The entry body is delimited by balanced scanning rather than "up to the next
+    ``}``", so the field may sit in any position within the entry and its value
+    may itself contain braces.
+
+    Raises:
+        RouteGuardCheckError: an entry declares no ``field``, or declares it
+            empty. Empty is not a decision: ``min: ''`` matches no wrapper the
+            router can carry, and ``gate: ''`` names no operation for a reviewer
+            to check the pairing against — and that pairing is precisely the part
+            of this table no script can verify for itself.
+    """
+    block = _named_block(source, name, "{", "}")
+    entries: dict[str, str] = {}
+    index = 0
+    while True:
+        key = _RECORD_KEY.search(block, index)
+        if key is None:
+            break
+        route = key.group("q") or key.group("dq") or key.group("bare")
+        body, index = _balanced_span(block, key.end() - 1, "{", "}")
+        value = re.search(rf"""\b{re.escape(field)}\s*:\s*'([^']*)'""", body)
+        if value is None:
+            raise RouteGuardCheckError(f"{name}['{route}'] declares no `{field}`")
+        if not value.group(1):
+            raise RouteGuardCheckError(f"{name}['{route}'] declares an empty `{field}`")
+        entries[route] = value.group(1)
+    return entries
+
+
 def parse_decisions(table_source: str) -> Decisions:
-    """Extract the three buckets from the TypeScript decision table."""
+    """Extract the four buckets from the TypeScript decision table."""
     source = _strip_comments(table_source)
 
-    guarded_block = _named_block(source, "ROLE_GUARDED_ROUTES", "{", "}")
-    guarded: dict[str, str] = {}
-    for match in re.finditer(
-        r"""(?:'(?P<q>[^']+)'|"(?P<dq>[^"]+)"|(?P<bare>[A-Za-z_$][\w$]*))\s*:\s*\{(?P<body>[^}]*)\}""",
-        guarded_block,
-    ):
-        route = match.group("q") or match.group("dq") or match.group("bare")
-        min_match = re.search(r"""\bmin\s*:\s*'([^']+)'""", match.group("body"))
-        if min_match is None:
-            raise RouteGuardCheckError(
-                f"ROLE_GUARDED_ROUTES['{route}'] declares no `min`"
-            )
-        guarded[route] = min_match.group(1)
+    guarded = _record_bucket(source, "ROLE_GUARDED_ROUTES", "min")
     # An *empty* ROLE_GUARDED_ROUTES is a legitimate state (nothing guarded), so it
     # is not treated as a parse failure — conflating "empty" with "unreadable" is
     # the same green-on-the-wrong-evidence shape this family exists to remove. A
@@ -186,35 +284,45 @@ def parse_decisions(table_source: str) -> Decisions:
 
     action_gated = _string_list(_named_block(source, "ACTION_GATED_ROUTES", "[", "]"))
     ungated = _string_list(_named_block(source, "UNGATED_ROUTES", "[", "]"))
+    # A table without the bucket is unreadable, not empty: `_named_block` raises,
+    # which exits 2. "I could not measure this" must not report green (NFR-018 §2).
+    platform_admin = _record_bucket(source, "PLATFORM_ADMIN_ROUTES", "gate")
 
-    return Decisions(guarded=guarded, action_gated=action_gated, ungated=ungated)
+    return Decisions(
+        guarded=guarded,
+        action_gated=action_gated,
+        ungated=ungated,
+        platform_admin=platform_admin,
+    )
 
 
 def _named_block(source: str, name: str, opener: str, closer: str) -> str:
-    """Return the balanced ``opener…closer`` block assigned to ``name``."""
+    """Return the balanced ``opener…closer`` block assigned to ``name``.
+
+    Delegates the scan to :func:`_balanced_span`, so a delimiter inside a quoted
+    entry does not shift the block boundary — the same reason the entry bodies
+    are scanned that way.
+    """
     anchor = re.search(rf"\b{re.escape(name)}\b[^=]*=\s*", source)
     if anchor is None:
         raise RouteGuardCheckError(f"{name} is not declared in the decision table")
     start = source.find(opener, anchor.end())
     if start == -1:
         raise RouteGuardCheckError(f"{name} has no `{opener}` after its assignment")
-    depth = 0
-    for index in range(start, len(source)):
-        if source[index] == opener:
-            depth += 1
-        elif source[index] == closer:
-            depth -= 1
-            if depth == 0:
-                return source[start + 1 : index]
-    raise RouteGuardCheckError(f"{name} has an unbalanced `{opener}`")
+    try:
+        block, _ = _balanced_span(source, start, opener, closer)
+    except RouteGuardCheckError as exc:
+        raise RouteGuardCheckError(f"{name} has an unbalanced `{opener}`") from exc
+    return block
 
 
 def _string_list(block: str) -> tuple[str, ...]:
     return tuple(re.findall(r"'([^']*)'", block))
 
 
-def parse_router(router_source: str) -> tuple[list[str], dict[str, str]]:
-    """Return the router's route paths and the ``min`` each guarded route declares.
+def parse_router(router_source: str) -> tuple[list[str], dict[str, str], list[str]]:
+    """Return the route paths, the ``min`` per role-guarded route, and the
+    platform-guarded routes.
 
     Raises:
         RouteGuardCheckError: a ``<Route>`` writes ``element`` before ``path``.
@@ -226,6 +334,7 @@ def parse_router(router_source: str) -> tuple[list[str], dict[str, str]]:
     """
     paths: list[str] = []
     guarded: dict[str, str] = {}
+    platform_guarded: list[str] = []
 
     for segment in router_source.split(ROUTE_SPLIT)[1:]:
         path_match = ROUTE_PATH.search(segment)
@@ -241,20 +350,28 @@ def parse_router(router_source: str) -> tuple[list[str], dict[str, str]]:
         paths.append(path_match.group(1))
         if element_match is None:
             continue
-        head = ELEMENT_HEAD.search(segment, element_match.end())
-        if head is None or head.group(1) != GUARD_COMPONENT:
-            continue
-        min_match = MIN_PROP.search(head.group(2))
-        guarded[path_match.group(1)] = min_match.group(1) if min_match else ""
+        # The whole `element={…}` expression, not just its outermost tag: a route
+        # that needs both axes nests the wrappers, and reading only the outer one
+        # would report the inner declaration as satisfied by nothing at all —
+        # green while a guard the table declares is absent.
+        expression, _ = _balanced_span(segment, element_match.end() - 1, "{", "}")
+        for tag in ELEMENT_HEAD.finditer(expression):
+            name, attributes = tag.group(1), tag.group(2)
+            if name == PLATFORM_GUARD_COMPONENT:
+                if path_match.group(1) not in platform_guarded:
+                    platform_guarded.append(path_match.group(1))
+            elif name == GUARD_COMPONENT and path_match.group(1) not in guarded:
+                min_match = MIN_PROP.search(attributes)
+                guarded[path_match.group(1)] = min_match.group(1) if min_match else ""
 
-    return paths, guarded
+    return paths, guarded, platform_guarded
 
 
 def collect(router_path: Path, table_path: Path) -> list[Finding]:
     """Run every rule and return the findings, ordered by rule then route."""
     router_source = _read(router_path)
     decisions = parse_decisions(_read(table_path))
-    paths, wrapped = parse_router(router_source)
+    paths, wrapped, platform_wrapped = parse_router(router_source)
 
     findings: list[Finding] = []
 
@@ -270,6 +387,7 @@ def collect(router_path: Path, table_path: Path) -> list[Finding]:
                 ("ROLE_GUARDED_ROUTES", decisions.guarded),
                 ("ACTION_GATED_ROUTES", decisions.action_gated),
                 ("UNGATED_ROUTES", decisions.ungated),
+                ("PLATFORM_ADMIN_ROUTES", decisions.platform_admin),
             )
             if route in bucket
         ]
@@ -283,7 +401,8 @@ def collect(router_path: Path, table_path: Path) -> list[Finding]:
             Finding(
                 "undecided-route",
                 route,
-                "add it to ROLE_GUARDED_ROUTES, ACTION_GATED_ROUTES or UNGATED_ROUTES "
+                "add it to ROLE_GUARDED_ROUTES, PLATFORM_ADMIN_ROUTES, "
+                "ACTION_GATED_ROUTES or UNGATED_ROUTES "
                 f"in {DEFAULT_TABLE} — every route needs a recorded decision, not "
                 "necessarily a guard",
             )
@@ -332,6 +451,37 @@ def collect(router_path: Path, table_path: Path) -> list[Finding]:
             )
         )
 
+    # The same pairing on the platform-admin axis (#1336). Kept separate from the
+    # loops above rather than merged into them: a `<RequireRole>` wrapper must not
+    # be able to satisfy a `PLATFORM_ADMIN_ROUTES` entry (or the reverse), because
+    # the two dependencies they mirror decide on different attributes and REQ-049
+    # §2.4 gives no rank that would let one stand in for the other.
+    for route in sorted(decisions.platform_admin):
+        if route not in paths:
+            continue  # already reported as obsolete
+        if route not in platform_wrapped:
+            findings.append(
+                Finding(
+                    "missing-platform-guard",
+                    route,
+                    f"PLATFORM_ADMIN_ROUTES declares it platform-admin-only "
+                    f"({decisions.platform_admin[route]}) but the route element is not "
+                    f"wrapped in <{PLATFORM_GUARD_COMPONENT}>",
+                )
+            )
+
+    for route in sorted(set(platform_wrapped) - set(decisions.platform_admin)):
+        findings.append(
+            Finding(
+                "undeclared-platform-guard",
+                route,
+                f"wrapped in <{PLATFORM_GUARD_COMPONENT}> but not in "
+                "PLATFORM_ADMIN_ROUTES; this guard replaces the page for every member "
+                "who is not a platform admin, so a route it was not measured for loses "
+                "content the API serves",
+            )
+        )
+
     return findings
 
 
@@ -345,6 +495,7 @@ def report(
                 "findings": [f.as_dict() for f in findings],
                 "decided": {
                     "guarded": decisions.guarded,
+                    "platform_admin": decisions.platform_admin,
                     "action_gated": list(decisions.action_gated),
                     "ungated": list(decisions.ungated),
                 },
@@ -370,12 +521,14 @@ def report(
     total = len(decisions.all_routes)
     print(
         f"check_route_role_guards: {total} routes decided "
-        f"({len(decisions.guarded)} guarded, {len(decisions.action_gated)} action-gated, "
-        f"{len(decisions.ungated)} ungated)."
+        f"({len(decisions.guarded)} guarded, {len(decisions.platform_admin)} platform-admin, "
+        f"{len(decisions.action_gated)} action-gated, {len(decisions.ungated)} ungated)."
     )
     if list_all:
         for route, minimum in sorted(decisions.guarded.items()):
             print(f"  guarded      {route}  (min {minimum})")
+        for route, gate in sorted(decisions.platform_admin.items()):
+            print(f"  platform     {route}  ({gate})")
         for route in sorted(decisions.action_gated):
             print(f"  action-gated {route}")
         for route in sorted(decisions.ungated):
@@ -394,8 +547,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="check_route_role_guards.py",
         description=(
             "Refuse a frontend route that carries no recorded role-guard decision, and "
-            "keep the <RequireRole> wrappers in AppRoutes.tsx paired with "
-            "ROLE_GUARDED_ROUTES in both directions (#1261, REQ-049 §2.3)."
+            "keep the <RequireRole> / <RequirePlatformAdmin> wrappers in AppRoutes.tsx "
+            "paired with ROLE_GUARDED_ROUTES / PLATFORM_ADMIN_ROUTES in both directions "
+            "(#1261, #1336, REQ-049 §2.3/§2.4)."
         ),
     )
     parser.add_argument(

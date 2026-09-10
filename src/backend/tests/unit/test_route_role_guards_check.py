@@ -12,6 +12,14 @@ table declares, adds a route nobody decided, and points the table at a route tha
 no longer exists — the three shapes #1261 is about — and asserts the check goes
 red and names each. A gate nobody has watched fail is a gate nobody knows works.
 
+**The second axis (#1336).** ``PLATFORM_ADMIN_ROUTES`` /
+``<RequirePlatformAdmin>`` are checked with the same two directions, plus the one
+that only exists once there are two axes: a wrapper of the *other* kind must not
+satisfy an entry. REQ-049 §2.4 gives the domain rank and the platform attribute
+no common rank, so a route "guarded" by the wrapper that answers the other
+question is ungated in fact — :class:`TestTheAxesDoNotSubstitute` asserts the
+check says so.
+
 **The obsolete-entry direction is the half that rots.** A deleted route leaving
 its decision behind turns the table into a pre-approval: the next route to re-use
 that path inherits a judgement nobody made for it. Same rule, same reason, as
@@ -41,6 +49,7 @@ checker = load_repo_script("check_route_role_guards")
 ROUTER_TEMPLATE = """\
 import {{ Route }} from 'react-router-dom';
 import RequireRole from '@/auth/RequireRole';
+import RequirePlatformAdmin from '@/auth/RequirePlatformAdmin';
 
 export const router = createBrowserRouter(
   createRoutesFromElements(
@@ -60,6 +69,19 @@ GUARDED_ROUTE = """\
               <{component} />
             </Suspense>
           </RequireRole>
+        }}
+      />
+"""
+
+PLATFORM_ROUTE = """\
+      <Route
+        path="{path}"
+        element={{
+          <RequirePlatformAdmin>
+            <Suspense fallback={{<LoadingSkeleton variant="form" />}}>
+              <{component} />
+            </Suspense>
+          </RequirePlatformAdmin>
         }}
       />
 """
@@ -90,13 +112,20 @@ def build_pair(tmp_path: Path) -> Callable[..., tuple[Path, Path]]:
         declared_guarded: dict[str, str] | None = None,
         action_gated: tuple[str, ...] = (),
         ungated: tuple[str, ...] = (),
+        platform_routes: tuple[str, ...] = (),
+        declared_platform: tuple[str, ...] | None = None,
     ) -> tuple[Path, Path]:
         guarded_routes = {} if guarded_routes is None else guarded_routes
         declared = guarded_routes if declared_guarded is None else declared_guarded
+        declared_platform_admin = platform_routes if declared_platform is None else declared_platform
 
         blocks = [
             GUARDED_ROUTE.format(path=path, min=minimum, component="PageFor" + str(index))
             for index, (path, minimum) in enumerate(guarded_routes.items())
+        ]
+        blocks += [
+            PLATFORM_ROUTE.format(path=path, component="AdminPage" + str(index))
+            for index, path in enumerate(platform_routes)
         ]
         blocks += [
             PLAIN_ROUTE.format(path=path, component="PlainPage" + str(index)) for index, path in enumerate(plain_routes)
@@ -124,12 +153,20 @@ def build_pair(tmp_path: Path) -> Callable[..., tuple[Path, Path]]:
                 export const UNGATED_ROUTES: readonly string[] = [
                 %(ungated)s
                 ];
+
+                export const PLATFORM_ADMIN_ROUTES = {
+                %(platform)s
+                };
                 """
             )
             % {
                 "entries": entries,
                 "action": "\n".join(f"  '{path}'," for path in action_gated),
                 "ungated": "\n".join(f"  '{path}'," for path in ungated),
+                "platform": "\n".join(
+                    f"  '{path}': {{ gate: 'GET /api/v1/admin/platform/x — require_platform_admin' }},"
+                    for path in declared_platform_admin
+                ),
             },
             encoding="utf-8",
         )
@@ -226,6 +263,121 @@ class TestGuardAndTableMustAgree:
         assert ("decided-twice", "dashboard") in rules(checker.collect(router, table))
 
 
+class TestThePlatformAdminAxis:
+    """The #1336 bucket, in the same two directions as the domain one."""
+
+    def test_a_declared_and_wrapped_route_passes(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+        router, table = build_pair(platform_routes=("admin/tenants/:key",))
+        assert checker.collect(router, table) == []
+
+    def test_declared_but_not_wrapped_is_refused(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+        # The state `develop` was in before #1336: the two admin routes were
+        # navigable by any member and the API answered 403.
+        router, table = build_pair(
+            plain_routes=("admin/tenants/:key",),
+            declared_platform=("admin/tenants/:key",),
+        )
+        assert rules(checker.collect(router, table)) == [("missing-platform-guard", "admin/tenants/:key")]
+
+    def test_wrapped_but_not_declared_is_refused(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+        # The other direction. This wrapper *replaces* the page for a non-admin,
+        # so applying it to a route nobody measured removes content the API serves
+        # — stricter than the API, the mirror-image defect.
+        router, table = build_pair(
+            platform_routes=("glossar",),
+            declared_platform=(),
+            ungated=("glossar",),
+        )
+        assert rules(checker.collect(router, table)) == [("undeclared-platform-guard", "glossar")]
+
+    def test_an_entry_without_a_gate_is_a_parse_error(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+        # The recorded gate is the whole reviewable part of the pairing: the check
+        # cannot verify that a route's decision is *correct*, so an entry that
+        # names no backend operation is a decision nobody can read back.
+        router, table = build_pair(platform_routes=("admin/users/:key",))
+        source = table.read_text(encoding="utf-8")
+        table.write_text(
+            source.replace("gate: 'GET /api/v1/admin/platform/x — require_platform_admin'", "reason: 'because'"),
+            encoding="utf-8",
+        )
+        with pytest.raises(checker.RouteGuardCheckError):
+            checker.collect(router, table)
+
+    def test_a_table_without_the_bucket_is_a_usage_error_not_a_pass(
+        self, build_pair: Callable[..., tuple[Path, Path]], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A table predating the bucket must not read as "no platform-admin route
+        # decided" — that would be green on the wrong evidence (NFR-018 §2), and
+        # every wrapper in the router would then look undeclared instead.
+        router, table = build_pair(platform_routes=("admin/users/:key",))
+        source = table.read_text(encoding="utf-8")
+        start = source.index("export const PLATFORM_ADMIN_ROUTES")
+        table.write_text(source[:start], encoding="utf-8")
+
+        code = checker.main(["--router", str(router), "--table", str(table)])
+        assert code == checker.EXIT_USAGE
+        assert "PLATFORM_ADMIN_ROUTES" in capsys.readouterr().err
+
+    def test_the_bucket_counts_as_a_decision(
+        self, build_pair: Callable[..., tuple[Path, Path]], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Without this the route would be reported `undecided-route` — the bucket
+        # has to join the other three, not sit beside them.
+        router, table = build_pair(platform_routes=("admin/users/:key",))
+        code = checker.main(["--router", str(router), "--table", str(table), "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        assert code == checker.EXIT_OK
+        assert payload["decided"]["platform_admin"] == {
+            "admin/users/:key": "GET /api/v1/admin/platform/x — require_platform_admin"
+        }
+
+    def test_a_route_in_two_buckets_across_the_axes_is_refused(
+        self, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        router, table = build_pair(
+            platform_routes=("admin/users/:key",),
+            ungated=("admin/users/:key",),
+        )
+        assert ("decided-twice", "admin/users/:key") in rules(checker.collect(router, table))
+
+
+class TestTheAxesDoNotSubstitute:
+    """A wrapper of one axis never satisfies an entry of the other (REQ-049 §2.4).
+
+    The failure this forbids is the plausible one: somebody "guards" an admin
+    route with ``<RequireRole min="lead">`` because it reads like the strictest
+    thing available. It is not the same question — a tenant lead is not a
+    platform admin, and `require_platform_admin` would still answer 403 — so the
+    check has to reject it rather than count it.
+    """
+
+    def test_a_role_wrapper_does_not_satisfy_a_platform_entry(
+        self, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        router, table = build_pair(
+            guarded_routes={"admin/users/:key": "lead"},
+            declared_guarded={},
+            declared_platform=("admin/users/:key",),
+        )
+        assert rules(checker.collect(router, table)) == [
+            ("missing-platform-guard", "admin/users/:key"),
+            ("undeclared-guard", "admin/users/:key"),
+        ]
+
+    def test_a_platform_wrapper_does_not_satisfy_a_role_entry(
+        self, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        router, table = build_pair(
+            platform_routes=("vermehrung",),
+            declared_platform=(),
+            declared_guarded={"vermehrung": "grower"},
+        )
+        assert rules(checker.collect(router, table)) == [
+            ("missing-guard", "vermehrung"),
+            ("undeclared-platform-guard", "vermehrung"),
+        ]
+
+
 class TestParsing:
     """Input handling that a green run would otherwise hide."""
 
@@ -318,6 +470,141 @@ class TestParsing:
         payload = json.loads(capsys.readouterr().out)
         assert code == checker.EXIT_FINDINGS
         assert payload["findings"][0]["route"] == "brandneu"
+
+
+class TestEntryBodiesAreScannedNotSliced:
+    """What a decision entry may contain (#1336 pre-merge review).
+
+    The first version of the shared record parser took the entry body as
+    "everything up to the next ``}``" and accepted an empty field value. Both
+    are green-on-the-wrong-evidence shapes: the first refused a table that is in
+    fact correct, the second accepted one that decides nothing. Every case here
+    was measured against that parser first.
+    """
+
+    def test_a_gate_naming_a_path_parameter_is_read_whole(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+        """A recorded gate names a real operation, and real paths carry ``{key}``.
+
+        Measured against the pre-review parser: exit 2,
+        ``PLATFORM_ADMIN_ROUTES['admin/users/:key'] declares no `gate```, because
+        the body ended inside ``{key}``.
+        """
+        router, table = build_pair(platform_routes=("admin/users/:key",))
+        gate = "DELETE /api/v1/admin/platform/users/{key} — require_platform_admin"
+        table.write_text(
+            table.read_text(encoding="utf-8").replace("GET /api/v1/admin/platform/x — require_platform_admin", gate),
+            encoding="utf-8",
+        )
+
+        assert checker.collect(router, table) == []
+        assert checker.parse_decisions(table.read_text(encoding="utf-8")).platform_admin == {"admin/users/:key": gate}
+
+    def test_a_field_written_after_a_braced_value_is_still_found(
+        self, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        # Same defect from the other side: with `gate` first and its value
+        # carrying `{tenant_slug}`, the `min` after it was outside the sliced
+        # body and the parser reported an entry that declares no minimum.
+        router, table = build_pair(guarded_routes={"vermehrung": "grower"})
+        table.write_text(
+            table.read_text(encoding="utf-8").replace(
+                "{ min: 'grower', gate: 'POST /x — require_tenant_role(grower)' }",
+                "{ gate: 'POST /api/v1/t/{tenant_slug}/propagation/events — "
+                "require_tenant_role(grower)', min: 'grower' }",
+            ),
+            encoding="utf-8",
+        )
+
+        assert checker.collect(router, table) == []
+
+    @pytest.mark.parametrize("bucket", ["min", "gate"], ids=["role-min", "platform-gate"])
+    def test_an_empty_field_value_is_refused(
+        self,
+        build_pair: Callable[..., tuple[Path, Path]],
+        capsys: pytest.CaptureFixture[str],
+        bucket: str,
+    ) -> None:
+        """Empty is not a decision — and the pre-review parser exited 0 on it.
+
+        ``min: ''`` matches no wrapper the router can carry, and ``gate: ''``
+        names no operation for a reviewer to check the pairing against. That
+        pairing is the one part of this table no script can verify, so an entry
+        that leaves it blank is a decision nobody can read back. The
+        ``missing-platform-guard`` message even had an ``or 'no gate recorded'``
+        fallback, which spelled the hole out and then papered over it.
+        """
+        if bucket == "min":
+            router, table = build_pair(guarded_routes={"vermehrung": "grower"})
+            original, emptied = "min: 'grower'", "min: ''"
+        else:
+            router, table = build_pair(platform_routes=("admin/users/:key",))
+            original = "gate: 'GET /api/v1/admin/platform/x — require_platform_admin'"
+            emptied = "gate: ''"
+        source = table.read_text(encoding="utf-8")
+        assert original in source
+        table.write_text(source.replace(original, emptied), encoding="utf-8")
+
+        code = checker.main(["--router", str(router), "--table", str(table)])
+        assert code == checker.EXIT_USAGE
+        assert "empty" in capsys.readouterr().err
+
+
+class TestNestedWrappersRegisterOnBothAxes:
+    """A route wrapped in both guards is read as carrying both (#1336 review).
+
+    The docstring used to promise that a nested pair is "refused, not silently
+    half-read". Measured, it was neither: the scan read the outermost tag only,
+    so ``<RequirePlatformAdmin><RequireRole min="lead">`` on a route declared
+    only in ``PLATFORM_ADMIN_ROUTES`` exited 0 with no finding — the inner
+    wrapper was invisible. The promise is now the behaviour.
+    """
+
+    @staticmethod
+    def _nested_router(tmp_path: Path) -> Path:
+        router = tmp_path / "Nested.tsx"
+        router.write_text(
+            "<Route\n"
+            '  path="admin/users/:key"\n'
+            "  element={\n"
+            "    <RequirePlatformAdmin>\n"
+            '      <RequireRole min="lead">\n'
+            "        <AdminEditUserPage />\n"
+            "      </RequireRole>\n"
+            "    </RequirePlatformAdmin>\n"
+            "  }\n"
+            "/>\n",
+            encoding="utf-8",
+        )
+        return router
+
+    def test_the_inner_wrapper_is_not_invisible(
+        self, tmp_path: Path, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        _, table = build_pair(declared_platform=("admin/users/:key",))
+        router = self._nested_router(tmp_path)
+
+        assert rules(checker.collect(router, table)) == [("undeclared-guard", "admin/users/:key")]
+
+    def test_declaring_it_on_both_axes_is_refused_loudly(
+        self, tmp_path: Path, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        """Two wrappers are readable; two *decisions* for one route are not — yet.
+
+        The buckets are a partition: every route carries exactly one recorded
+        decision, and `decided-twice` is what keeps two entries from disagreeing
+        about the same route. A route genuinely needing both axes therefore
+        cannot be expressed today, and this asserts that the check says so
+        *loudly* rather than picking one bucket and passing. No route needs it;
+        the day one does, this goes red and the table gets a shape somebody chose
+        deliberately — which is the honest order for a rule this cheap to weaken.
+        """
+        _, table = build_pair(
+            declared_guarded={"admin/users/:key": "lead"},
+            declared_platform=("admin/users/:key",),
+        )
+        router = self._nested_router(tmp_path)
+
+        assert ("decided-twice", "admin/users/:key") in rules(checker.collect(router, table))
 
 
 class TestShippedTree:

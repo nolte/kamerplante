@@ -163,6 +163,12 @@
     "title": "This action needs the “{{role}}” role",
     "description": "You can view this page, but the action in the header is hidden for you: creating and changing data in this tenant requires at least the “{{role}}” role. Ask your tenant lead if you need those rights."
   },
+  "platformAdminGuard": {
+    "title": "Platform administration",
+    "noticeTitle": "This area is reserved for platform administration",
+    "description": "Tenants and user accounts of this installation are managed by platform administration only. Your account does not hold that permission — the server answers even this page's read requests with \u201c403 Forbidden\u201d, so there is nothing to show here. Ask the administrators of this installation if you need those rights.",
+    "backToDashboard": "Go to dashboard"
+  },
   "storageSettings": {
     "title": "Storage",
     "intro": "Choose where Kamerplanter stores binary data (photos, imports, exports). This selection applies to the whole instance and takes effect immediately after saving.",
