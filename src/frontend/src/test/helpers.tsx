@@ -1,8 +1,8 @@
-import { type ReactElement } from 'react';
+import { Children, isValidElement, type ElementType, type ReactElement, type ReactNode } from 'react';
 import { render } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { combineReducers, configureStore } from '@reduxjs/toolkit';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { createMemoryRouter, RouterProvider, type RouteObject } from 'react-router-dom';
 import { SnackbarProvider } from 'notistack';
 import { ThemeContextProvider } from '@/theme';
 import uiReducer from '@/store/slices/uiSlice';
@@ -207,4 +207,55 @@ export function renderWithProviders(
       </Provider>,
     ),
   };
+}
+
+/** One addressable route of the constructed router tree. */
+export interface FlatRoute {
+  path: string;
+  element: ReactNode;
+}
+
+/**
+ * Every addressable route of a router tree, depth-first (#1261, #1336).
+ *
+ * Lives here rather than in each route test because two suites assert route
+ * decisions from two tables, and a second copy of the traversal is the thing
+ * that drifts: the platform-admin suite would keep walking a tree the
+ * domain-role suite had learned to walk differently.
+ */
+export function flattenRoutes(routes: RouteObject[]): FlatRoute[] {
+  const flat: FlatRoute[] = [];
+  for (const route of routes) {
+    if (route.path) flat.push({ path: route.path, element: route.element });
+    if (route.children) flat.push(...flattenRoutes(route.children));
+  }
+  return flat;
+}
+
+/** The flattened route registered at `path`, or a failure naming it. */
+export function findFlatRoute(routes: FlatRoute[], path: string): FlatRoute {
+  const match = routes.find((route) => route.path === path);
+  if (!match) throw new Error(`Route "${path}" is not registered in AppRoutes.tsx`);
+  return match;
+}
+
+/**
+ * The first element of type `type` anywhere in `node`'s subtree, or `null`.
+ *
+ * Deliberately **not** "is the outermost element this type": a route may nest
+ * guards (`<RequirePlatformAdmin><RequireRole …>`), and a check that read only
+ * the outer one reported the inner as absent — measured on
+ * `scripts/check_route_role_guards.py`, whose text scan had the same hole and
+ * passed a route wrapped in one axis while the table declared the other. Both
+ * measurements of that rule now walk the whole subtree.
+ */
+export function findElementOfType(node: ReactNode, type: ElementType): ReactElement | null {
+  if (!isValidElement(node)) return null;
+  if (node.type === type) return node;
+  const { children } = node.props as { children?: ReactNode };
+  for (const child of Children.toArray(children)) {
+    const found = findElementOfType(child, type);
+    if (found) return found;
+  }
+  return null;
 }

@@ -1,19 +1,26 @@
-import { isValidElement, type ReactNode } from 'react';
 import { describe, it, expect } from 'vitest';
 import { screen } from '@testing-library/react';
-import type { RouteObject } from 'react-router-dom';
+import type { ReactNode } from 'react';
 import { router } from '@/routes/AppRoutes';
 import { PLATFORM_ADMIN_ROUTES } from '@/routes/roleGuardedRoutes';
 import RequirePlatformAdmin from '@/auth/RequirePlatformAdmin';
 import RequireRole from '@/auth/RequireRole';
-import { createStoreWithTenantRole, createTestStore, renderWithProviders } from '@/test/helpers';
+import { fetchProfile } from '@/store/slices/authSlice';
+import {
+  createStoreWithTenantRole,
+  createTestStore,
+  findElementOfType,
+  findFlatRoute,
+  flattenRoutes,
+  renderWithProviders,
+} from '@/test/helpers';
 
 /**
  * #1336 — the router consulted the **platform-admin** attribute nowhere, so any
  * tenant member could open `/admin/tenants/:key` and `/admin/users/:key`. The API
  * answers 403 there, including on the two reads the pages load with, and
- * `AdminEditTenantPage` swallows the refusal into "tenant not found" — a false
- * explanation for a tenant that exists.
+ * `AdminEditTenantPage` reports every failure as "tenant not found" — so the
+ * refusal arrived as a false explanation for a tenant that exists.
  *
  * Same defect class as #1261, **different axis**: REQ-049 §2.4 keeps the domain
  * rank and the platform attribute disjoint, so this is a second wrapper reading a
@@ -27,31 +34,15 @@ import { createStoreWithTenantRole, createTestStore, renderWithProviders } from 
  * `admin/*` route the router registers, not the two that were reported.
  */
 
-interface FlatRoute {
-  path: string;
-  element: ReactNode;
+const FLAT_ROUTES = flattenRoutes(router.routes);
+
+function routeFor(path: string) {
+  return findFlatRoute(FLAT_ROUTES, path);
 }
 
-function flatten(routes: RouteObject[]): FlatRoute[] {
-  const out: FlatRoute[] = [];
-  for (const route of routes) {
-    if (route.path) out.push({ path: route.path, element: route.element });
-    if (route.children) out.push(...flatten(route.children));
-  }
-  return out;
-}
-
-const FLAT_ROUTES = flatten(router.routes);
-
-function routeFor(path: string): FlatRoute {
-  const match = FLAT_ROUTES.find((r) => r.path === path);
-  if (!match) throw new Error(`Route "${path}" is not registered in AppRoutes.tsx`);
-  return match;
-}
-
-/** Whether a route's element is the platform-admin wrapper. */
+/** Whether the route's element subtree carries the platform-admin wrapper. */
 function isPlatformGuarded(element: ReactNode): boolean {
-  return isValidElement(element) && element.type === RequirePlatformAdmin;
+  return findElementOfType(element, RequirePlatformAdmin) !== null;
 }
 
 const PLATFORM_ENTRIES = Object.entries(PLATFORM_ADMIN_ROUTES);
@@ -87,12 +78,16 @@ describe('AppRoutes — platform-admin guard placement (#1336)', () => {
     }
   });
 
-  it('does not double-guard: no admin route also carries <RequireRole>', () => {
-    // The axes are disjoint (REQ-049 §2.4). A nested pair would also be the one
-    // shape `check_route_role_guards.py` refuses to read, so keep them apart
-    // until a route genuinely needs both.
+  it('does not double-guard: no admin route carries <RequireRole> anywhere inside', () => {
+    // The axes are disjoint (REQ-049 §2.4), and the decision table is a
+    // partition — two entries for one route are `decided-twice` in
+    // `check_route_role_guards.py`. The search walks the whole element subtree
+    // rather than the outermost tag: the script's text scan read only the outer
+    // wrapper at first and reported a nested pair as clean, so a check here that
+    // looked only at `element.type` would repeat that hole in the second
+    // measurement, which exists precisely to not repeat it.
     const roleWrapped = FLAT_ROUTES.filter(
-      (r) => isValidElement(r.element) && r.element.type === RequireRole,
+      (r) => findElementOfType(r.element, RequireRole) !== null,
     ).map((r) => r.path);
     expect(roleWrapped.filter((p) => p in PLATFORM_ADMIN_ROUTES)).toEqual([]);
   });
@@ -157,10 +152,11 @@ describe('RequirePlatformAdmin — what each caller gets', () => {
     expect(screen.queryByTestId('platform-admin-required-page')).not.toBeInTheDocument();
   });
 
-  it('does not refuse while the profile is not loaded yet', () => {
+  it('does not refuse before the bootstrap has run at all', () => {
     // `usePlatformAdmin` reports `false` for an admin too until `/users/me` has
     // answered. Reading that as a refusal would flash this notice at the very
-    // users the page is for (the #1091 A-4 bootstrap window).
+    // users the page is for. Nobody is signed in here, so the question is not
+    // this guard's — `ProtectedRoute` owns it.
     renderWithProviders(
       <RequirePlatformAdmin>
         <Probe />
@@ -172,6 +168,54 @@ describe('RequirePlatformAdmin — what each caller gets', () => {
     expect(screen.queryByTestId('platform-admin-required-page')).not.toBeInTheDocument();
   });
 
+  it('holds the real bootstrap window on a skeleton — neither answer yet', () => {
+    // The window `ProtectedRoute` does not cover, and the case the store above
+    // does *not* reach: the JWT bootstrap resolves `refreshAccessToken` first,
+    // which sets `initialized` AND `isAuthenticated` (authSlice), and only then
+    // awaits `fetchProfile` (AuthProvider.initAuth). `ProtectedRoute` gates on
+    // `initialized` alone, so passing children through here means a plain member
+    // reloading /admin/tenants/<key> mounts the page, fires `fetchAdminTenants()`
+    // and reads "Mandant nicht gefunden" until the profile arrives — the exact
+    // sequence this guard exists to end. Refusing instead would flash the notice
+    // at an admin, so the honest answer is "not known yet".
+    renderWithProviders(
+      <RequirePlatformAdmin>
+        <Probe />
+      </RequirePlatformAdmin>,
+      {
+        store: createTestStore({
+          auth: { user: null, isAuthenticated: true, isLoading: true, initialized: true },
+        }),
+      },
+    );
+
+    expect(screen.getByTestId('loading-skeleton')).toBeInTheDocument();
+    expect(screen.queryByTestId('admin-probe-content')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('platform-admin-required-page')).not.toBeInTheDocument();
+  });
+
+  it('cannot hang on the skeleton when the profile fetch fails', () => {
+    // `fetchProfile.rejected` clears `isAuthenticated` and `user` together, so
+    // the failure state is not the waiting state: it falls through to the
+    // pass-through arm and lands in `ProtectedRoute`'s redirect to /login.
+    // Without this, "wait for the profile" would be a way to strand a user on a
+    // skeleton forever.
+    const store = createTestStore({
+      auth: { user: null, isAuthenticated: true, isLoading: true, initialized: true },
+    });
+    store.dispatch({ type: fetchProfile.rejected.type, error: { message: 'boom' } });
+
+    renderWithProviders(
+      <RequirePlatformAdmin>
+        <Probe />
+      </RequirePlatformAdmin>,
+      { store },
+    );
+
+    expect(screen.queryByTestId('loading-skeleton')).not.toBeInTheDocument();
+    expect(screen.getByTestId('admin-probe-content')).toBeInTheDocument();
+  });
+
   it.each(['viewer', 'grower', 'lead'] as const)(
     'refuses a tenant %s who is not a platform admin',
     (role) => {
@@ -180,7 +224,7 @@ describe('RequirePlatformAdmin — what each caller gets', () => {
       // A predicate that let a lead through would be looser than the API.
       const store = createStoreWithTenantRole(role);
       store.dispatch({
-        type: 'auth/fetchProfile/fulfilled',
+        type: fetchProfile.fulfilled.type,
         payload: { key: 'user-1', email: 'member@example.test', is_platform_admin: false },
       });
 

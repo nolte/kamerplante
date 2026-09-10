@@ -245,16 +245,19 @@ export interface PlatformAdminRoute {
  * - `admin/tenants/:key`, `admin/users/:key` — **listed below.** Every request
  *   these pages make is `require_platform_admin`, including the two `GET`s they
  *   load with. A refused member has nothing to read here at all.
- * - `settings` — the account page **every member owns**; only its *platform* and
- *   *ha* tabs are admin surfaces. It cannot be route-guarded on this axis
+ * - `settings` — the account page **every member owns**. Its *platform* tab is
+ *   the admin surface (the *ha* tab is **not**, measured: `PUT`/`POST`/`DELETE`
+ *   `/admin/settings/home-assistant` and `/plant-identification` are gated on
+ *   `get_current_user` alone, which is #1385, not a platform-admin gate this
+ *   could mirror). It cannot be route-guarded on this axis
  *   without taking every member's own account settings away, so it keeps its
  *   domain-axis decision in {@link ACTION_GATED_ROUTES}. Measuring it did
  *   contradict the assumption this entry started from: the `platform` tab is
  *   offered to everyone (unlike the `storage`/`weather` tabs, which are built
  *   only when `canManageStorage`), and `AccountSettingsPage` derives its own
- *   `isPlatformAdmin` by *probing* the three admin endpoints and catching the
- *   403 — so a non-admin who opens `/settings#platform` still gets the tab, with
- *   empty cards behind it. That is the same defect on the same axis at the tab
+ *   `isPlatformAdmin` by *probing* the three `/admin/platform` endpoints and
+ *   catching the 403 — so a non-admin who opens `/settings#platform` still gets
+ *   the tab, with empty cards behind it. That is the same defect on the same axis at the tab
  *   level, and it is deliberately **not** fixed here: it belongs to the page, not
  *   to the router. Recorded in the #1336 pull request as a follow-up.
  * - `stammdaten/species/:key` (reference-image curation) and
@@ -269,11 +272,15 @@ export interface PlatformAdminRoute {
  * access the server grants. That reasoning **does not transfer here** — checked
  * rather than assumed: `GET /admin/platform/tenants` and `GET /admin/platform/users`
  * carry `require_platform_admin` exactly like the writes beside them. A banner
- * over the page would sit above nothing, and today's behaviour is worse than
- * nothing: `AdminEditTenantPage` swallows the 403 and renders
- * `pages.admin.tenantNotFound`, telling a member the tenant does not exist when
- * it does and they merely may not see it. So refusal renders a replacement state
- * — what the page is, that the account lacks the right, and the way back.
+ * over the page would sit above nothing, and what the member gets instead is
+ * worse than nothing: `AdminEditTenantPage` loads without a `.catch`, so *any*
+ * rejection leaves `tenant` null and renders `pages.admin.tenantNotFound` —
+ * "not found" for a tenant that exists. So refusal renders a replacement state:
+ * what the page is, that the account lacks the right, and the way back.
+ *
+ * That page-level conflation is **not** fixed by this guard, only bypassed for
+ * the one caller it turns away. A platform admin meeting a 500 or a dropped
+ * connection still reads "not found" — #1390.
  *
  * ## Deliberately not decided here: `admin_scope`
  *

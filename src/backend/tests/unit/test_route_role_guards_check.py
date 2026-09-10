@@ -180,22 +180,6 @@ def rules(findings: list[object]) -> list[tuple[str, str]]:
     return sorted((f.rule, f.route) for f in findings)  # type: ignore[attr-defined]
 
 
-def _capture_json(module: object, argv: list[str]) -> str:
-    """Run ``main`` with ``--json`` and return what it printed.
-
-    ``capsys`` cannot be requested from a helper, and the JSON body is the part
-    that proves the new bucket reaches the machine-readable output rather than
-    only the human one.
-    """
-    import contextlib
-    import io as _io
-
-    buffer = _io.StringIO()
-    with contextlib.redirect_stdout(buffer):
-        module.main(argv)  # type: ignore[attr-defined]
-    return buffer.getvalue()
-
-
 class TestAcceptsACompleteTable:
     """A router whose every route is decided, with the declared guards in place."""
 
@@ -334,11 +318,15 @@ class TestThePlatformAdminAxis:
         assert code == checker.EXIT_USAGE
         assert "PLATFORM_ADMIN_ROUTES" in capsys.readouterr().err
 
-    def test_the_bucket_counts_as_a_decision(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+    def test_the_bucket_counts_as_a_decision(
+        self, build_pair: Callable[..., tuple[Path, Path]], capsys: pytest.CaptureFixture[str]
+    ) -> None:
         # Without this the route would be reported `undecided-route` — the bucket
         # has to join the other three, not sit beside them.
         router, table = build_pair(platform_routes=("admin/users/:key",))
-        payload = json.loads(_capture_json(checker, ["--router", str(router), "--table", str(table), "--json"]))
+        code = checker.main(["--router", str(router), "--table", str(table), "--json"])
+        payload = json.loads(capsys.readouterr().out)
+        assert code == checker.EXIT_OK
         assert payload["decided"]["platform_admin"] == {
             "admin/users/:key": "GET /api/v1/admin/platform/x — require_platform_admin"
         }
@@ -482,6 +470,141 @@ class TestParsing:
         payload = json.loads(capsys.readouterr().out)
         assert code == checker.EXIT_FINDINGS
         assert payload["findings"][0]["route"] == "brandneu"
+
+
+class TestEntryBodiesAreScannedNotSliced:
+    """What a decision entry may contain (#1336 pre-merge review).
+
+    The first version of the shared record parser took the entry body as
+    "everything up to the next ``}``" and accepted an empty field value. Both
+    are green-on-the-wrong-evidence shapes: the first refused a table that is in
+    fact correct, the second accepted one that decides nothing. Every case here
+    was measured against that parser first.
+    """
+
+    def test_a_gate_naming_a_path_parameter_is_read_whole(self, build_pair: Callable[..., tuple[Path, Path]]) -> None:
+        """A recorded gate names a real operation, and real paths carry ``{key}``.
+
+        Measured against the pre-review parser: exit 2,
+        ``PLATFORM_ADMIN_ROUTES['admin/users/:key'] declares no `gate```, because
+        the body ended inside ``{key}``.
+        """
+        router, table = build_pair(platform_routes=("admin/users/:key",))
+        gate = "DELETE /api/v1/admin/platform/users/{key} — require_platform_admin"
+        table.write_text(
+            table.read_text(encoding="utf-8").replace("GET /api/v1/admin/platform/x — require_platform_admin", gate),
+            encoding="utf-8",
+        )
+
+        assert checker.collect(router, table) == []
+        assert checker.parse_decisions(table.read_text(encoding="utf-8")).platform_admin == {"admin/users/:key": gate}
+
+    def test_a_field_written_after_a_braced_value_is_still_found(
+        self, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        # Same defect from the other side: with `gate` first and its value
+        # carrying `{tenant_slug}`, the `min` after it was outside the sliced
+        # body and the parser reported an entry that declares no minimum.
+        router, table = build_pair(guarded_routes={"vermehrung": "grower"})
+        table.write_text(
+            table.read_text(encoding="utf-8").replace(
+                "{ min: 'grower', gate: 'POST /x — require_tenant_role(grower)' }",
+                "{ gate: 'POST /api/v1/t/{tenant_slug}/propagation/events — "
+                "require_tenant_role(grower)', min: 'grower' }",
+            ),
+            encoding="utf-8",
+        )
+
+        assert checker.collect(router, table) == []
+
+    @pytest.mark.parametrize("bucket", ["min", "gate"], ids=["role-min", "platform-gate"])
+    def test_an_empty_field_value_is_refused(
+        self,
+        build_pair: Callable[..., tuple[Path, Path]],
+        capsys: pytest.CaptureFixture[str],
+        bucket: str,
+    ) -> None:
+        """Empty is not a decision — and the pre-review parser exited 0 on it.
+
+        ``min: ''`` matches no wrapper the router can carry, and ``gate: ''``
+        names no operation for a reviewer to check the pairing against. That
+        pairing is the one part of this table no script can verify, so an entry
+        that leaves it blank is a decision nobody can read back. The
+        ``missing-platform-guard`` message even had an ``or 'no gate recorded'``
+        fallback, which spelled the hole out and then papered over it.
+        """
+        if bucket == "min":
+            router, table = build_pair(guarded_routes={"vermehrung": "grower"})
+            original, emptied = "min: 'grower'", "min: ''"
+        else:
+            router, table = build_pair(platform_routes=("admin/users/:key",))
+            original = "gate: 'GET /api/v1/admin/platform/x — require_platform_admin'"
+            emptied = "gate: ''"
+        source = table.read_text(encoding="utf-8")
+        assert original in source
+        table.write_text(source.replace(original, emptied), encoding="utf-8")
+
+        code = checker.main(["--router", str(router), "--table", str(table)])
+        assert code == checker.EXIT_USAGE
+        assert "empty" in capsys.readouterr().err
+
+
+class TestNestedWrappersRegisterOnBothAxes:
+    """A route wrapped in both guards is read as carrying both (#1336 review).
+
+    The docstring used to promise that a nested pair is "refused, not silently
+    half-read". Measured, it was neither: the scan read the outermost tag only,
+    so ``<RequirePlatformAdmin><RequireRole min="lead">`` on a route declared
+    only in ``PLATFORM_ADMIN_ROUTES`` exited 0 with no finding — the inner
+    wrapper was invisible. The promise is now the behaviour.
+    """
+
+    @staticmethod
+    def _nested_router(tmp_path: Path) -> Path:
+        router = tmp_path / "Nested.tsx"
+        router.write_text(
+            "<Route\n"
+            '  path="admin/users/:key"\n'
+            "  element={\n"
+            "    <RequirePlatformAdmin>\n"
+            '      <RequireRole min="lead">\n'
+            "        <AdminEditUserPage />\n"
+            "      </RequireRole>\n"
+            "    </RequirePlatformAdmin>\n"
+            "  }\n"
+            "/>\n",
+            encoding="utf-8",
+        )
+        return router
+
+    def test_the_inner_wrapper_is_not_invisible(
+        self, tmp_path: Path, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        _, table = build_pair(declared_platform=("admin/users/:key",))
+        router = self._nested_router(tmp_path)
+
+        assert rules(checker.collect(router, table)) == [("undeclared-guard", "admin/users/:key")]
+
+    def test_declaring_it_on_both_axes_is_refused_loudly(
+        self, tmp_path: Path, build_pair: Callable[..., tuple[Path, Path]]
+    ) -> None:
+        """Two wrappers are readable; two *decisions* for one route are not — yet.
+
+        The buckets are a partition: every route carries exactly one recorded
+        decision, and `decided-twice` is what keeps two entries from disagreeing
+        about the same route. A route genuinely needing both axes therefore
+        cannot be expressed today, and this asserts that the check says so
+        *loudly* rather than picking one bucket and passing. No route needs it;
+        the day one does, this goes red and the table gets a shape somebody chose
+        deliberately — which is the honest order for a rule this cheap to weaken.
+        """
+        _, table = build_pair(
+            declared_guarded={"admin/users/:key": "lead"},
+            declared_platform=("admin/users/:key",),
+        )
+        router = self._nested_router(tmp_path)
+
+        assert ("decided-twice", "admin/users/:key") in rules(checker.collect(router, table))
 
 
 class TestShippedTree:

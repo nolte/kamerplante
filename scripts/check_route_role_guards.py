@@ -63,12 +63,17 @@ limit is the reason the decision table records the gate it mirrors verbatim per
 guarded route: a reviewer can check the pairing by reading, which is the part a
 script cannot do for them.
 
-**A route needing both axes is refused, not silently half-read.** The scan reads
-the *outermost* element of ``element={…}``, so a nested
-``<RequirePlatformAdmin><RequireRole …>`` pair would be seen as the outer one
-only — and the inner declaration would surface as ``missing-guard`` rather than
-pass unnoticed. No route needs both today; the day one does, this check goes red
-and gets nesting support, which is the honest order.
+**A route needing both axes is read as carrying both.** The scan walks every JSX
+tag inside ``element={…}``, so a nested ``<RequirePlatformAdmin><RequireRole …>``
+pair registers on both axes and each is then paired against its own bucket. An
+earlier version read only the outermost tag and this paragraph claimed refusal
+for the nested case; measured, it exited 0 with no finding — the inner wrapper
+was invisible, so a route declared in one bucket and wrapped in the other passed.
+No route needs both today, and one cannot be *declared* on both either: the
+buckets are a partition, so two entries for one route are ``decided-twice``. That
+is deliberate — the day a route genuinely needs both, this check goes red and the
+table gets a shape somebody chose, instead of a wrapper quietly satisfying a
+bucket that asks a different question.
 
 Traces to #1261 and #1336, REQ-049 §2.3/§2.4, and the 2026-08-08 issue-pattern
 audit's "guard opt-in at the call site" cluster.
@@ -107,7 +112,8 @@ ROUTE_PATH = re.compile(r'\bpath="([^"]+)"')
 
 ROUTE_ELEMENT = re.compile(r"\belement=\{")
 
-#: The first JSX element inside ``element={…}`` — the route's outermost wrapper.
+#: Every JSX opening tag inside ``element={…}``. The scan reads *all* of them,
+#: not just the outermost, so a nested guard pair is seen as both guards.
 ELEMENT_HEAD = re.compile(r"<(\w+)([^>]*)>")
 
 MIN_PROP = re.compile(r'\bmin="(\w+)"')
@@ -179,10 +185,52 @@ def _strip_comments(source: str) -> str:
     return _TOKEN.sub(lambda match: "" if match.group(1) else match.group(0), source)
 
 
-#: One ``'route': { … }`` entry of a record-shaped bucket.
-_RECORD_ENTRY = re.compile(
-    r"""(?:'(?P<q>[^']+)'|"(?P<dq>[^"]+)"|(?P<bare>[A-Za-z_$][\w$]*))\s*:\s*\{(?P<body>[^}]*)\}"""
+#: The key of one ``'route': { … }`` entry, up to and including its ``{``.
+_RECORD_KEY = re.compile(
+    r"""(?:'(?P<q>[^']+)'|"(?P<dq>[^"]+)"|(?P<bare>[A-Za-z_$][\w$]*))\s*:\s*\{"""
 )
+
+
+def _balanced_span(
+    source: str, start: int, opener: str, closer: str
+) -> tuple[str, int]:
+    """Return the text inside the ``opener…closer`` pair at ``start``, and its end.
+
+    Quoted spans are skipped, so a delimiter *inside a string* neither opens nor
+    closes anything. That is not hypothetical here: a recorded gate names a real
+    operation and a real path carries its parameters —
+    ``DELETE /api/v1/admin/platform/users/{key}``. Read with ``[^}]*`` the entry
+    body ended at that brace, a ``gate`` written after it was never seen, and the
+    check exited 2 claiming the entry declares none.
+
+    Args:
+        source: the text to scan.
+        start: index of the opening delimiter.
+        opener: the opening delimiter, e.g. ``{``.
+        closer: the matching closing delimiter, e.g. ``}``.
+
+    Returns:
+        The inner text, and the index just past the closing delimiter.
+
+    Raises:
+        RouteGuardCheckError: the delimiters are unbalanced.
+    """
+    depth = 0
+    index = start
+    while index < len(source):
+        char = source[index]
+        if char in "'\"`":
+            index += 1
+            while index < len(source) and source[index] != char:
+                index += 1
+        elif char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : index], index + 1
+        index += 1
+    raise RouteGuardCheckError(f"unbalanced `{opener}` starting at offset {start}")
 
 
 def _record_bucket(source: str, name: str, field: str) -> dict[str, str]:
@@ -192,16 +240,32 @@ def _record_bucket(source: str, name: str, field: str) -> dict[str, str]:
     for its ``min`` and ``PLATFORM_ADMIN_ROUTES`` for its ``gate``. Sharing the
     parse rather than forking it keeps the two axes from drifting on how a table
     is *read* — they already differ on what they mean, which is enough.
+
+    The entry body is delimited by balanced scanning rather than "up to the next
+    ``}``", so the field may sit in any position within the entry and its value
+    may itself contain braces.
+
+    Raises:
+        RouteGuardCheckError: an entry declares no ``field``, or declares it
+            empty. Empty is not a decision: ``min: ''`` matches no wrapper the
+            router can carry, and ``gate: ''`` names no operation for a reviewer
+            to check the pairing against — and that pairing is precisely the part
+            of this table no script can verify for itself.
     """
     block = _named_block(source, name, "{", "}")
     entries: dict[str, str] = {}
-    for match in _RECORD_ENTRY.finditer(block):
-        route = match.group("q") or match.group("dq") or match.group("bare")
-        value = re.search(
-            rf"""\b{re.escape(field)}\s*:\s*'([^']*)'""", match.group("body")
-        )
+    index = 0
+    while True:
+        key = _RECORD_KEY.search(block, index)
+        if key is None:
+            break
+        route = key.group("q") or key.group("dq") or key.group("bare")
+        body, index = _balanced_span(block, key.end() - 1, "{", "}")
+        value = re.search(rf"""\b{re.escape(field)}\s*:\s*'([^']*)'""", body)
         if value is None:
             raise RouteGuardCheckError(f"{name}['{route}'] declares no `{field}`")
+        if not value.group(1):
+            raise RouteGuardCheckError(f"{name}['{route}'] declares an empty `{field}`")
         entries[route] = value.group(1)
     return entries
 
@@ -233,22 +297,23 @@ def parse_decisions(table_source: str) -> Decisions:
 
 
 def _named_block(source: str, name: str, opener: str, closer: str) -> str:
-    """Return the balanced ``opener…closer`` block assigned to ``name``."""
+    """Return the balanced ``opener…closer`` block assigned to ``name``.
+
+    Delegates the scan to :func:`_balanced_span`, so a delimiter inside a quoted
+    entry does not shift the block boundary — the same reason the entry bodies
+    are scanned that way.
+    """
     anchor = re.search(rf"\b{re.escape(name)}\b[^=]*=\s*", source)
     if anchor is None:
         raise RouteGuardCheckError(f"{name} is not declared in the decision table")
     start = source.find(opener, anchor.end())
     if start == -1:
         raise RouteGuardCheckError(f"{name} has no `{opener}` after its assignment")
-    depth = 0
-    for index in range(start, len(source)):
-        if source[index] == opener:
-            depth += 1
-        elif source[index] == closer:
-            depth -= 1
-            if depth == 0:
-                return source[start + 1 : index]
-    raise RouteGuardCheckError(f"{name} has an unbalanced `{opener}`")
+    try:
+        block, _ = _balanced_span(source, start, opener, closer)
+    except RouteGuardCheckError as exc:
+        raise RouteGuardCheckError(f"{name} has an unbalanced `{opener}`") from exc
+    return block
 
 
 def _string_list(block: str) -> tuple[str, ...]:
@@ -285,16 +350,19 @@ def parse_router(router_source: str) -> tuple[list[str], dict[str, str], list[st
         paths.append(path_match.group(1))
         if element_match is None:
             continue
-        head = ELEMENT_HEAD.search(segment, element_match.end())
-        if head is None:
-            continue
-        if head.group(1) == PLATFORM_GUARD_COMPONENT:
-            platform_guarded.append(path_match.group(1))
-            continue
-        if head.group(1) != GUARD_COMPONENT:
-            continue
-        min_match = MIN_PROP.search(head.group(2))
-        guarded[path_match.group(1)] = min_match.group(1) if min_match else ""
+        # The whole `element={…}` expression, not just its outermost tag: a route
+        # that needs both axes nests the wrappers, and reading only the outer one
+        # would report the inner declaration as satisfied by nothing at all —
+        # green while a guard the table declares is absent.
+        expression, _ = _balanced_span(segment, element_match.end() - 1, "{", "}")
+        for tag in ELEMENT_HEAD.finditer(expression):
+            name, attributes = tag.group(1), tag.group(2)
+            if name == PLATFORM_GUARD_COMPONENT:
+                if path_match.group(1) not in platform_guarded:
+                    platform_guarded.append(path_match.group(1))
+            elif name == GUARD_COMPONENT and path_match.group(1) not in guarded:
+                min_match = MIN_PROP.search(attributes)
+                guarded[path_match.group(1)] = min_match.group(1) if min_match else ""
 
     return paths, guarded, platform_guarded
 
@@ -397,8 +465,8 @@ def collect(router_path: Path, table_path: Path) -> list[Finding]:
                     "missing-platform-guard",
                     route,
                     f"PLATFORM_ADMIN_ROUTES declares it platform-admin-only "
-                    f"({decisions.platform_admin[route] or 'no gate recorded'}) but the "
-                    f"route element is not wrapped in <{PLATFORM_GUARD_COMPONENT}>",
+                    f"({decisions.platform_admin[route]}) but the route element is not "
+                    f"wrapped in <{PLATFORM_GUARD_COMPONENT}>",
                 )
             )
 
