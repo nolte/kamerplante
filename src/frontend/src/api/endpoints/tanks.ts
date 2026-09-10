@@ -275,19 +275,32 @@ export async function createSensor(
   return data;
 }
 
+/**
+ * Update a sensor attached to a tank.
+ *
+ * Scoped by the tank, like create and list: a sensor carries no `tenant_key`,
+ * so its parent is the tenant anchor the backend verifies. Until #1339 this
+ * posted to `/tanks/sensors/{key}`, which no route has ever served — every edit
+ * answered 404.
+ */
 export async function updateSensor(
+  tankKey: string,
   sensorKey: string,
   payload: SensorUpdate,
 ): Promise<Sensor> {
   const { data } = await client.put<Sensor>(
-    `${BASE}/sensors/${sensorKey}`,
+    `${BASE}/${tankKey}/sensors/${sensorKey}`,
     payload,
   );
   return data;
 }
 
-export async function deleteSensor(sensorKey: string): Promise<void> {
-  await client.delete(`${BASE}/sensors/${sensorKey}`);
+/** Delete a sensor attached to a tank (see {@link updateSensor} on the scoping). */
+export async function deleteSensor(
+  tankKey: string,
+  sensorKey: string,
+): Promise<void> {
+  await client.delete(`${BASE}/${tankKey}/sensors/${sensorKey}`);
 }
 
 // ── HA Entity Discovery ──────────────────────────────────────────────

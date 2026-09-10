@@ -15,6 +15,9 @@ vi.mock('@/api/client', () => ({
   __esModule: true,
   default: mocks.client,
   tenantClient: mocks.client,
+  // `taskPhotoUri` reads the active slug to rebuild an attachment URI from a
+  // stored id, so the double has to answer it (#1339 review).
+  getActiveTenantSlug: () => 'mein-garten',
 }));
 
 import * as tasks from '@/api/endpoints/tasks';
@@ -221,16 +224,36 @@ describe('tasks endpoints — tasks CRUD', () => {
     expect(client.delete).toHaveBeenCalledWith('/tasks/tk1');
   });
 
-  it('uploadTaskPhoto posts FormData with multipart header', async () => {
-    client.post.mockResolvedValue({ data: { url: '/p.jpg' } });
+  it('uploadTaskPhoto posts FormData with multipart header and returns the attachment', async () => {
+    // The response is the NFR-013 attachment shape since #1339, not the
+    // `{ url, filename, size_bytes }` of the unauthenticated static file this
+    // endpoint was originally imagined to write — a file no route ever wrote.
+    const attachment = {
+      attachment_id: 'att-1',
+      uri: '/api/v1/t/mein-garten/attachments/att-1',
+      thumbnail_uris: null,
+      mime_type: 'image/jpeg',
+      byte_size: 1,
+      original_filename: 'p.jpg',
+    };
+    client.post.mockResolvedValue({ data: attachment });
     const file = new File(['x'], 'p.jpg', { type: 'image/jpeg' });
-    await tasks.uploadTaskPhoto('tk1', file);
+    const result = await tasks.uploadTaskPhoto('tk1', file);
     expect(client.post).toHaveBeenCalledTimes(1);
     const [url, body, opts] = client.post.mock.calls[0];
     expect(url).toBe('/tasks/tk1/photos');
     expect(body).toBeInstanceOf(FormData);
     expect((body as FormData).get('file')).toBe(file);
     expect(opts).toEqual({ headers: { 'Content-Type': 'multipart/form-data' } });
+    expect(result.attachment_id).toBe('att-1');
+  });
+
+  it('taskPhotoUri builds the attachment URI from the id and the active slug', () => {
+    // `photo_refs` stores bare ids (NFR-013 §2.2 / AC-09); the URI is rebuilt at
+    // render time, which is what survives a tenant rename.
+    expect(tasks.taskPhotoUri('att-1')).toMatch(/\/attachments\/att-1$/);
+    expect(tasks.taskPhotoUri('att-1', 512)).toMatch(/\/attachments\/att-1\/thumbnails\/512$/);
+    expect(tasks.taskPhotoUri('att-1')).toBe('/api/v1/t/mein-garten/attachments/att-1');
   });
 
   it('startTask posts to start endpoint', async () => {

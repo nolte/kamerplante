@@ -1,8 +1,8 @@
-import { tenantClient as client } from '../client';
+import { tenantClient as client, getActiveTenantSlug } from '../client';
 import type {
   BatchResponse,
   HSTValidationResult,
-  PhotoUploadResponse,
+  TaskPhoto,
   TaskAuditEntry,
   TaskCloneRequest,
   TaskComment,
@@ -253,13 +253,39 @@ export async function deleteTask(key: string): Promise<void> {
   await client.delete(`${BASE}/${key}`);
 }
 
+/**
+ * Build the authenticated URI of a task photo attachment.
+ *
+ * A task stores bare attachment ids in `photo_refs` (NFR-013 §2.2 / AC-09), not
+ * URIs — a stored URI carries the tenant slug, which `TenantService.update_tenant`
+ * re-derives on a rename, and the shipped `migrate_photo_refs` job rewrites that
+ * exact shape back to ids. The shape mirrors `_base_uri()` in
+ * `app/api/v1/attachments/tenant_router.py` and `diaryPhotoUri` next door; pass
+ * the result to {@link AuthImage}, which sends the Bearer header a bare
+ * `<img src>` could not.
+ */
+export function taskPhotoUri(attachmentId: string, size?: number): string {
+  const slug = getActiveTenantSlug() ?? '';
+  const uri = `/api/v1/t/${slug}/attachments/${attachmentId}`;
+  return size ? `${uri}/thumbnails/${size}` : uri;
+}
+
+/**
+ * Upload a photo for a task and return its attachment (REQ-006).
+ *
+ * The photo is *not* attached to the task here: the completion form stages the
+ * returned `attachment_id` values and submits them with `completeTask`, which is
+ * what writes `photo_refs` and what the `requires_photo` gate reads. Until #1339
+ * the backend served no route at all for this, so a task with `requires_photo`
+ * could not be completed.
+ */
 export async function uploadTaskPhoto(
   key: string,
   file: File,
-): Promise<PhotoUploadResponse> {
+): Promise<TaskPhoto> {
   const formData = new FormData();
   formData.append('file', file);
-  const { data } = await client.post<PhotoUploadResponse>(
+  const { data } = await client.post<TaskPhoto>(
     `${BASE}/${key}/photos`,
     formData,
     { headers: { 'Content-Type': 'multipart/form-data' } },

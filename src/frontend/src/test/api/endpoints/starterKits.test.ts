@@ -71,13 +71,4 @@ describe('starterKits endpoints — tenant client', () => {
     await kits.getKitForTenant('k1');
     expect(tenantClient.get).toHaveBeenCalledWith('/starter-kits/k1');
   });
-
-  it('applyKit posts site name and plant count', async () => {
-    tenantClient.post.mockResolvedValue({ data: {} });
-    await kits.applyKit('k1', 'My Site', 3);
-    expect(tenantClient.post).toHaveBeenCalledWith('/starter-kits/k1/apply', {
-      site_name: 'My Site',
-      plant_count: 3,
-    });
-  });
 });

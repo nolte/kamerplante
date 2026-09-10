@@ -57,8 +57,21 @@ interface Opts {
   createStatus?: number;
 }
 
+/**
+ * Paths the dialog actually requested, in order.
+ *
+ * The update handler below used to be registered on
+ * `/tanks/sensors/:sensorKey` — a path no backend route has ever served, so
+ * the doubled boundary certified the wrong contract and the edit test was green
+ * while every real edit answered 404 (#1339). Recording the URL is what makes
+ * the reshape falsifiable here: an assertion on `onSaved` alone passes against
+ * any path msw happens to be told about.
+ */
+const requested: string[] = [];
+
 function registerHandlers(opts: Opts = {}) {
   const { haEntities = [], createStatus } = opts;
+  requested.length = 0;
   const ok = <T,>(body: T) => HttpResponse.json(body as unknown as Record<string, unknown>);
   const err = () =>
     HttpResponse.json(
@@ -76,9 +89,20 @@ function registerHandlers(opts: Opts = {}) {
     http.post('/api/v1/t/:tenant/locations/:locKey/sensors', () =>
       createStatus ? err() : ok({ ...EDIT_SENSOR, key: 'new-3' }),
     ),
-    http.put('/api/v1/t/:tenant/tanks/sensors/:sensorKey', () =>
-      createStatus ? err() : ok({ ...EDIT_SENSOR }),
-    ),
+    // One update route per parent, exactly as the backend serves them: a sensor
+    // carries no tenant of its own, so its parent is the tenant anchor.
+    http.put('/api/v1/t/:tenant/tanks/:tankKey/sensors/:sensorKey', ({ request }) => {
+      requested.push(new URL(request.url).pathname);
+      return createStatus ? err() : ok({ ...EDIT_SENSOR });
+    }),
+    http.put('/api/v1/t/:tenant/sites/:siteKey/sensors/:sensorKey', ({ request }) => {
+      requested.push(new URL(request.url).pathname);
+      return createStatus ? err() : ok({ ...EDIT_SENSOR });
+    }),
+    http.put('/api/v1/t/:tenant/locations/:locKey/sensors/:sensorKey', ({ request }) => {
+      requested.push(new URL(request.url).pathname);
+      return createStatus ? err() : ok({ ...EDIT_SENSOR });
+    }),
   );
 }
 
@@ -135,7 +159,7 @@ describe('SensorCreateDialog', () => {
     expect(screen.getByText(i18n.t('pages.sensors.add'))).toBeInTheDocument();
     // No HA entities -> the manual entity-id field is shown, no autocomplete.
     expect(await screen.findByTestId('form-field-ha_entity_id')).toBeInTheDocument();
-    // Add mode hides the is_active switch.
+    // No is_active switch in either mode — see the edit test below for why.
     expect(screen.queryByTestId('form-field-is_active')).not.toBeInTheDocument();
   });
 
@@ -203,17 +227,49 @@ describe('SensorCreateDialog', () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it('renders the edit form with the active switch and updates the sensor', async () => {
+  it('renders the edit form with the active switch and updates the sensor on its tank', async () => {
     const user = userEvent.setup();
     registerHandlers({ haEntities: [] });
     const { onSaved } = mount({ sensor: EDIT_SENSOR });
     await screen.findByTestId('sensor-create-dialog');
     expect(screen.getByText(i18n.t('pages.sensors.edit'))).toBeInTheDocument();
-    // Edit mode reveals the is_active switch and pre-fills the name.
-    expect(screen.getByTestId('form-field-is_active')).toBeInTheDocument();
+    // The edit form pre-fills the name and offers NO is_active switch. It used
+    // to: unticking it wrote `is_active: false`, and every read filters
+    // `is_active == true` (find_by_tank/site/location; no get-by-key, no
+    // `include_inactive`), so the sensor vanished from the only surfaces that
+    // list it with no way back through the API (#1339 review). A control whose
+    // one direction is irreversible is worse than no control.
+    expect(screen.queryByTestId('form-field-is_active')).not.toBeInTheDocument();
     expect(screen.getByTestId('form-field-name').querySelector('input')).toHaveValue('Existing Probe');
     await user.click(screen.getByTestId('form-submit-button'));
     await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(requested).toEqual(['/api/v1/t/test-tenant/tanks/tank-1/sensors/sensor-9']);
+  });
+
+  it('updates a site sensor on its site', async () => {
+    const user = userEvent.setup();
+    registerHandlers({ haEntities: [] });
+    const { onSaved } = mount({
+      sensor: EDIT_SENSOR,
+      context: { parentType: 'site', parentKey: 'site-1' },
+    });
+    await screen.findByTestId('sensor-create-dialog');
+    await user.click(screen.getByTestId('form-submit-button'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(requested).toEqual(['/api/v1/t/test-tenant/sites/site-1/sensors/sensor-9']);
+  });
+
+  it('updates a location sensor on its location', async () => {
+    const user = userEvent.setup();
+    registerHandlers({ haEntities: [] });
+    const { onSaved } = mount({
+      sensor: EDIT_SENSOR,
+      context: { parentType: 'location', parentKey: 'loc-1' },
+    });
+    await screen.findByTestId('sensor-create-dialog');
+    await user.click(screen.getByTestId('form-submit-button'));
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(requested).toEqual(['/api/v1/t/test-tenant/locations/loc-1/sensors/sensor-9']);
   });
 
   it('surfaces an API error and keeps the dialog open when saving fails', async () => {

@@ -10,6 +10,7 @@ import type {
   LiveStateResponse,
   Sensor,
   SensorCreate,
+  SensorUpdate,
   Slot,
   SlotCreate,
 } from '../types';
@@ -153,6 +154,32 @@ export async function createSiteSensor(
   return data;
 }
 
+/**
+ * Update a sensor attached to a site.
+ *
+ * Scoped by the site, like create and list: a sensor carries no `tenant_key`,
+ * so its parent is the tenant anchor the backend verifies (#1339).
+ */
+export async function updateSiteSensor(
+  siteKey: string,
+  sensorKey: string,
+  payload: SensorUpdate,
+): Promise<Sensor> {
+  const { data } = await tenantClient.put<Sensor>(
+    `${SITES}/${siteKey}/sensors/${sensorKey}`,
+    payload,
+  );
+  return data;
+}
+
+/** Delete a sensor attached to a site (see {@link updateSiteSensor}). */
+export async function deleteSiteSensor(
+  siteKey: string,
+  sensorKey: string,
+): Promise<void> {
+  await tenantClient.delete(`${SITES}/${siteKey}/sensors/${sensorKey}`);
+}
+
 export async function getSiteSensorsLive(
   siteKey: string,
 ): Promise<LiveStateResponse> {
@@ -182,6 +209,33 @@ export async function createLocationSensor(
     payload,
   );
   return data;
+}
+
+/**
+ * Update a sensor attached to a location.
+ *
+ * Scoped by the location, like create and list: neither a sensor nor a location
+ * carries a `tenant_key`, so the backend resolves the anchor through the
+ * location's site (#1339).
+ */
+export async function updateLocationSensor(
+  locationKey: string,
+  sensorKey: string,
+  payload: SensorUpdate,
+): Promise<Sensor> {
+  const { data } = await tenantClient.put<Sensor>(
+    `${LOCATIONS}/${locationKey}/sensors/${sensorKey}`,
+    payload,
+  );
+  return data;
+}
+
+/** Delete a sensor attached to a location (see {@link updateLocationSensor}). */
+export async function deleteLocationSensor(
+  locationKey: string,
+  sensorKey: string,
+): Promise<void> {
+  await tenantClient.delete(`${LOCATIONS}/${locationKey}/sensors/${sensorKey}`);
 }
 
 export async function getLocationSensorsLive(

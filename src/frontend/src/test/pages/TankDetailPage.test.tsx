@@ -351,10 +351,16 @@ describe('TankDetailPage', () => {
         { key: 'sensor-1', name: 'pH Probe', metric_type: 'ph', ha_entity_id: 'sensor.ph', is_active: true, unit_of_measurement: 'pH' },
       ],
     });
-    let deleted = false;
+    // Registered on `/tanks/sensors/{key}` until #1339 — a path no backend route
+    // has ever served. The doubled boundary answered it anyway, so this test was
+    // green while every real delete returned 404. The concrete pathname is
+    // asserted, not just "some delete arrived": a pattern handler matches
+    // `/tanks/sensor-1/sensors/undefined` too, which is exactly what the
+    // pre-#1339 call shape would have produced against the new route.
+    let deleted: string | null = null;
     server.use(
-      http.delete('/api/v1/t/:tenant/tanks/sensors/:sensorKey', () => {
-        deleted = true;
+      http.delete('/api/v1/t/:tenant/tanks/:tankKey/sensors/:sensorKey', ({ request }) => {
+        deleted = new URL(request.url).pathname;
         return new HttpResponse(null, { status: 204 });
       }),
     );
@@ -364,7 +370,9 @@ describe('TankDetailPage', () => {
 
     await user.click(await screen.findByTestId('sensor-delete-sensor-1'));
     await user.click(await screen.findByTestId('confirm-dialog-confirm'));
-    await waitFor(() => expect(deleted).toBe(true));
+    await waitFor(() =>
+      expect(deleted).toBe('/api/v1/t/test-tenant/tanks/tank-1/sensors/sensor-1'),
+    );
   });
 
   it('deletes the tank through the confirm dialog and navigates to the list', async () => {

@@ -227,17 +227,24 @@ describe('tanks endpoints — relationships, sensors, HA', () => {
     expect(client.post).toHaveBeenCalledWith('/tanks/t1/sensors', payload);
   });
 
-  it('updateSensor puts to /tanks/sensors/{key}', async () => {
+  // Both of the next two asserted `/tanks/sensors/{key}` until #1339 — a path no
+  // backend route has ever served. They were green from the day they were
+  // written, because a mocked client can only be checked against the client:
+  // the assertion restated the very string it was meant to verify. The path is
+  // now the one the backend serves, and the join in
+  // `tests/unit/api/test_frontend_endpoints_are_served.py` is what keeps it
+  // honest — this test can only pin the reshape, not the contract.
+  it('updateSensor puts to the tank-scoped sensor path', async () => {
     client.put.mockResolvedValue({ data: { key: 'se1' } });
     const payload = { name: 'X' } as never;
-    await tanks.updateSensor('se1', payload);
-    expect(client.put).toHaveBeenCalledWith('/tanks/sensors/se1', payload);
+    await tanks.updateSensor('t1', 'se1', payload);
+    expect(client.put).toHaveBeenCalledWith('/tanks/t1/sensors/se1', payload);
   });
 
-  it('deleteSensor deletes /tanks/sensors/{key}', async () => {
+  it('deleteSensor deletes the tank-scoped sensor path', async () => {
     client.delete.mockResolvedValue({ data: undefined });
-    await tanks.deleteSensor('se1');
-    expect(client.delete).toHaveBeenCalledWith('/tanks/sensors/se1');
+    await tanks.deleteSensor('t1', 'se1');
+    expect(client.delete).toHaveBeenCalledWith('/tanks/t1/sensors/se1');
   });
 
   it('listHaEntities gets HA entity suggestions', async () => {

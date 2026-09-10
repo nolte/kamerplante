@@ -652,6 +652,9 @@ def get_task_service() -> TaskService:
         DependencyResolver(),
         recurrence=get_recurrence_engine(),
         notification_propagation=get_notification_propagation_service(),
+        # So a completion's `photo_refs` are resolved against the attachment
+        # catalogue instead of trusted as strings (#1339 review).
+        attachment_repo=get_attachment_repo(),
     )
 
 
@@ -1277,6 +1280,10 @@ def get_sensor_service():
         get_ha_client(),
         weather_forecast_repo=get_weather_forecast_repo(),
         site_repo=get_site_repo(),
+        # So a deleted sensor takes its TimescaleDB series with it (#1339
+        # review). Resolves to the null repository when TimescaleDB is absent,
+        # which makes the readings step a no-op rather than a failure.
+        observation_repo=get_observation_repo(),
     )
 
 

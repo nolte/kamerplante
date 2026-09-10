@@ -483,10 +483,15 @@ describe('LocationDetailPage', () => {
 
   it('deletes a sensor through its confirm dialog', async () => {
     useFullLocation();
-    let deleteCalled = false;
+    // Registered on `/tanks/sensors/{key}` until #1339 — a path no backend route
+    // has ever served. The doubled boundary answered it anyway, so this test was
+    // green while every real delete returned 404. The concrete pathname is
+    // asserted, because a pattern handler also matches a call with the sensor
+    // key in the parent position.
+    let deleteCalled: string | null = null;
     server.use(
-      http.delete('/api/v1/t/:tenant/tanks/sensors/:key', () => {
-        deleteCalled = true;
+      http.delete('/api/v1/t/:tenant/locations/:locationKey/sensors/:key', ({ request }) => {
+        deleteCalled = new URL(request.url).pathname;
         return new HttpResponse(null, { status: 204 });
       }),
     );
@@ -498,13 +503,15 @@ describe('LocationDetailPage', () => {
     await user.click(within(sensorRow).getByTestId('DeleteIcon').closest('button')!);
     await user.click(await screen.findByTestId('confirm-dialog-confirm'));
 
-    await waitFor(() => expect(deleteCalled).toBe(true));
+    await waitFor(() =>
+      expect(deleteCalled).toBe('/api/v1/t/test-tenant/locations/loc-1/sensors/sensor-1'),
+    );
   });
 
   it('surfaces an error when sensor deletion fails', async () => {
     useFullLocation();
     server.use(
-      http.delete('/api/v1/t/:tenant/tanks/sensors/:key', () => errorEnvelope(500)),
+      http.delete('/api/v1/t/:tenant/locations/:locationKey/sensors/:key', () => errorEnvelope(500)),
     );
     const user = userEvent.setup();
     renderPage();

@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.api.v1.attachments.schemas import ThumbnailUris
 
 # ── Checklist ──
 
@@ -483,3 +485,43 @@ class WorkflowAddTaskRequest(BaseModel):
     estimated_duration_minutes: int | None = None
     tags: list[str] = Field(default_factory=list)
     checklist: list[ChecklistItemSchema] = Field(default_factory=list)
+
+
+# ── Task Photos (REQ-006, NFR-013) ──
+
+
+class TaskPhotoResponse(BaseModel):
+    """One uploaded task photo, addressed by its attachment (REQ-006, #1339).
+
+    Mirrors ``PlantPhotoResponse``: only the attachment id and stable
+    tenant-scoped URIs are exposed, never bucket / backend / storage-key details
+    (NFR-013 AC-03/AC-04). ``uri`` is what the completion form carries in
+    ``photo_refs``; it is permission-gated, so a client must fetch it
+    authenticated rather than pointing an ``<img src>`` at it.
+    """
+
+    attachment_id: str
+    uri: str
+    thumbnail_uris: ThumbnailUris | None = None
+    mime_type: str
+    byte_size: int
+    original_filename: str
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "attachment_id": "917340",
+                    "uri": "/api/v1/t/mein-garten/attachments/917340",
+                    "thumbnail_uris": {
+                        "small": "/api/v1/t/mein-garten/attachments/917340/thumbnails/128",
+                        "medium": "/api/v1/t/mein-garten/attachments/917340/thumbnails/512",
+                        "large": "/api/v1/t/mein-garten/attachments/917340/thumbnails/1280",
+                    },
+                    "mime_type": "image/jpeg",
+                    "byte_size": 24831,
+                    "original_filename": "topping-node-3.jpg",
+                }
+            ]
+        }
+    )

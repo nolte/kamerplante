@@ -46,7 +46,6 @@ import { useAppDispatch, useAppSelector } from '@/store/hooks';
 import { fetchSite, clearCurrent } from '@/store/slices/sitesSlice';
 import { setBreadcrumbs } from '@/store/slices/uiSlice';
 import * as api from '@/api/endpoints/sites';
-import * as tankApi from '@/api/endpoints/tanks';
 import type { Sensor, SiteWaterConfig } from '@/api/types';
 import { buildSiteResolver, gpsToFields, gpsToPayload, isWeatherRelevantSiteType, siteTypeOptions, type SiteFormData } from './siteForm';
 
@@ -186,10 +185,12 @@ export default function SiteDetailPage() {
   };
 
   const handleDeleteSensor = async () => {
-    if (deleteSensorKey) {
+    if (deleteSensorKey && key) {
       setDeletingSensor(true);
       try {
-        await tankApi.deleteSensor(deleteSensorKey);
+        // Scoped by the site: a sensor has no tenant of its own, so its parent
+        // is the anchor the backend verifies (#1339).
+        await api.deleteSiteSensor(key, deleteSensorKey);
         notification.success(t('pages.sensors.deleted'));
         loadSensors();
       } catch (err) {

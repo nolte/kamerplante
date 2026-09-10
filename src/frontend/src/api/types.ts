@@ -1987,13 +1987,24 @@ export interface SensorCreate {
   tank_key?: string | null;
 }
 
+/**
+ * Editable fields of a sensor.
+ *
+ * `is_active` is deliberately absent, although `Sensor` carries it: every read
+ * filters `is_active == true` and there is no get-by-key or `include_inactive`
+ * route, so writing `false` would make the sensor vanish from the only surfaces
+ * that list it, with no way back through the API (#1339 review). Mirrors
+ * `SensorUpdate` in `app/api/v1/tanks/schemas.py`.
+ *
+ * An explicit `null` clears a value; an omitted key leaves it untouched (the
+ * routes dump with `exclude_unset`).
+ */
 export interface SensorUpdate {
   name?: string;
   metric_type?: string;
   ha_entity_id?: string | null;
   unit_of_measurement?: string | null;
   mqtt_topic?: string | null;
-  is_active?: boolean;
 }
 
 /**
@@ -3891,10 +3902,30 @@ export interface TaskItemUpdate {
   trigger_phase_override?: string | null;
 }
 
-export interface PhotoUploadResponse {
-  url: string;
-  filename: string;
-  size_bytes: number;
+/** Thumbnail renditions of a task photo, or `null` while they generate. */
+export interface TaskPhotoThumbnailUris {
+  small: string;
+  medium: string;
+  large: string;
+}
+
+/**
+ * One uploaded task photo (REQ-006), addressed by its NFR-013 attachment.
+ *
+ * Replaces the `{ url, filename, size_bytes }` shape the client used to declare:
+ * that described an unauthenticated static file under `/uploads/tasks`, which
+ * no endpoint ever wrote and which #1339 removed. `uri` is permission-gated, so
+ * it must be fetched through the authenticated client (`AuthImage`) rather than
+ * handed to an `<img src>`.
+ */
+export interface TaskPhoto {
+  attachment_id: string;
+  /** Stable, tenant-scoped download URI for the original object. */
+  uri: string;
+  thumbnail_uris: TaskPhotoThumbnailUris | null;
+  mime_type: string;
+  byte_size: number;
+  original_filename: string;
 }
 
 export interface TaskCompleteRequest {

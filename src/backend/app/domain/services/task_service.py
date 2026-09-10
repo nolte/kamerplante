@@ -2,12 +2,13 @@ from datetime import UTC, datetime, timedelta
 
 import structlog
 
-from app.common.enums import TaskOrigin
+from app.common.enums import AttachmentCategory, TaskOrigin
 from app.common.exceptions import NotFoundError, ValidationError
 from app.common.tenant_guard import verify_tenant_ownership, verify_tenant_read_access
 from app.domain.engines.dependency_resolver import DependencyResolver
 from app.domain.engines.hst_validator import HSTValidator
 from app.domain.engines.recurrence_engine import RecurrenceEngine
+from app.domain.interfaces.attachment_repository import IAttachmentRepository
 from app.domain.interfaces.task_repository import ITaskRepository
 from app.domain.models.task import (
     ChecklistItem,
@@ -198,8 +199,14 @@ class TaskService:
         dependency_resolver: DependencyResolver,
         recurrence: RecurrenceEngine | None = None,
         notification_propagation: NotificationPropagationService | None = None,
+        attachment_repo: IAttachmentRepository | None = None,
     ) -> None:
         self._repo = repo
+        # Resolves the `photo_refs` a completion carries (#1339 review). Optional
+        # only so the many existing constructions of this service keep working;
+        # the DI factory always supplies it, and `_verify_photo_refs` fails
+        # closed rather than waving a reference through when it is absent.
+        self._attachment_repo = attachment_repo
         self._hst = hst_validator
         self._deps = dependency_resolver
         self._recurrence = recurrence or RecurrenceEngine()
@@ -1039,6 +1046,61 @@ class TaskService:
         task.started_at = datetime.now(UTC)
         return self._repo.update_task(key, task)
 
+    def _verify_photo_refs(
+        self,
+        refs: list[str],
+        already_attached: list[str],
+        *,
+        tenant_key: str,
+    ) -> None:
+        """Refuse a photo reference that is not this tenant's task attachment.
+
+        ``TaskCompleteRequest.photo_refs`` is a bare ``list[str]`` and was
+        forwarded verbatim, so ``['x']`` satisfied a ``requires_photo`` task and
+        a foreign attachment id could be pinned onto one's own task. The diary
+        sibling has resolved every reference through the attachment catalogue
+        since REQ-050; this is the same rule for REQ-006.
+
+        A reference already stored on the task is not re-checked: it passed once,
+        and re-validating it would make an unrelated completion fail after a
+        legitimate attachment was later erased under NFR-011 retention.
+
+        Unknown, foreign and wrong-category all raise the **same**
+        ``ValidationError`` (422): distinguishing them would confirm that an id
+        exists somewhere else in the installation.
+
+        Args:
+            refs: The references the caller sent.
+            already_attached: References the task already carries.
+            tenant_key: Owning tenant of the task.
+
+        Raises:
+            ValidationError: If a new reference does not resolve to a
+                ``TASK``-category attachment of this tenant, or if no attachment
+                catalogue is configured to judge it.
+        """
+        known = set(already_attached)
+        added = [ref for ref in dict.fromkeys(refs) if ref not in known]
+        if not added:
+            return
+
+        if self._attachment_repo is None:
+            # Fail closed. A service assembled without the resolver cannot judge
+            # a reference, and accepting it "for now" is how a guard ends up
+            # inert in production while every test still passes.
+            raise ValidationError(
+                "Task photo references cannot be validated: no attachment catalogue is configured.",
+                details=[{"field": "photo_refs", "message": "attachment lookup unavailable"}],
+            )
+
+        for ref in added:
+            attachment = self._attachment_repo.get(ref, tenant_key)
+            if attachment is None or attachment.category != AttachmentCategory.TASK:
+                raise ValidationError(
+                    f"'{ref}' is not a task photo of this tenant.",
+                    details=[{"field": "photo_refs", "message": f"unknown task attachment '{ref}'"}],
+                )
+
     def complete_task(
         self,
         key: str,
@@ -1058,7 +1120,14 @@ class TaskService:
             raise ValidationError("This task requires at least one photo before completion.")
 
         if photo_refs:
-            task.photo_refs.extend(photo_refs)
+            self._verify_photo_refs(photo_refs, task.photo_refs, tenant_key=tenant_key)
+            # Order-preserving dedup across what is already stored and what
+            # arrives. The completion form seeds its list from the task's own
+            # `photo_refs`, so reopening a completed task and completing it again
+            # used to append every existing ref a second time — `[a, a, b]` in the
+            # document and duplicate React keys in the gallery (#1339 review).
+            known = set(task.photo_refs)
+            task.photo_refs.extend(ref for ref in dict.fromkeys(photo_refs) if ref not in known)
 
         task.status = "completed"
         task.completed_at = datetime.now(UTC)

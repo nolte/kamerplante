@@ -281,12 +281,27 @@ class SensorCreate(BaseModel):
 
 
 class SensorUpdate(BaseModel):
+    """Editable fields of a sensor (REQ-005 §2).
+
+    ``is_active`` is deliberately **not** here, although the model carries it.
+    Every read filters it — ``find_by_tank`` / ``find_by_site`` /
+    ``find_by_location`` all end in ``AND s.is_active == true``, there is no
+    get-by-key route and no ``include_inactive`` — so a client that could write
+    ``false`` would make the sensor vanish from the only surfaces that can list
+    it, with no way back through the API. Offering a switch whose one direction
+    is irreversible is worse than not offering it (#1339 review). Restoring it
+    means adding the read path first; see the follow-up issue.
+
+    Every field is optional and unset-aware: the routes dump with
+    ``exclude_unset``, so an explicit ``null`` clears a value and an omitted key
+    leaves it alone.
+    """
+
     name: str | None = Field(default=None, min_length=1, max_length=200)
     metric_type: str | None = None
     ha_entity_id: str | None = None
     unit_of_measurement: str | None = None
     mqtt_topic: str | None = None
-    is_active: bool | None = None
 
 
 class SensorResponse(BaseModel):
