@@ -66,6 +66,30 @@ tasks:
     cmds:
       - python3 scripts/check_notification_write_boundary.py {{.CLI_ARGS}}
 
+  check:frontend-calls-served:
+    desc: |
+      Join every frontend `client.<verb>` call against the routes the FastAPI app
+      actually mounts, and fail on any call no route serves (#1334, #1339). Four
+      such calls existed when this was first run: a phase-transition button, a
+      sensor edit, a sensor delete offered from three pages and the task photo
+      upload — each a live control that answered 404, and none of them findable
+      by anything but a browser.
+
+      NOT a pre-commit hook, and deliberately not in the `check` aggregate above.
+      Its route operand is the *mounted* app, so it needs the backend importable,
+      which the required `static` lane does not have; re-deriving the route table
+      from source text would be a second, drifting implementation of FastAPI's
+      mounting rules. It runs instead where both operands already exist and a
+      required gate already runs — the backend unit tier, via
+      src/backend/tests/unit/api/test_frontend_endpoints_are_served.py — and the
+      extraction itself is asserted from
+      src/backend/tests/unit/test_frontend_calls_served_check.py. This target is
+      the local loop for that same check while a route is being written.
+
+      Pass --list to name every joined call, --json for machine-readable output.
+    cmds:
+      - python3 scripts/check_frontend_calls_served.py {{.CLI_ARGS}}
+
   check:seed-catalogue-page-size:
     desc: |
       Compare the seeded rows of every reference catalogue against the page its

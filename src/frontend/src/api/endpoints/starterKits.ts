@@ -32,15 +32,3 @@ export async function getKitForTenant(
   );
   return data;
 }
-
-export async function applyKit(
-  kitId: string,
-  siteName: string,
-  plantCount: number,
-): Promise<Record<string, unknown>> {
-  const { data } = await tenantClient.post(`${BASE}/${kitId}/apply`, {
-    site_name: siteName,
-    plant_count: plantCount,
-  });
-  return data as Record<string, unknown>;
-}
