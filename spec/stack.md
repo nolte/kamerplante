@@ -2313,10 +2313,12 @@ pyenv local 3.14
 docker run -it python:3.14-slim bash
 ```
 
-#### Requirements Management
+#### Dependency Management
+
+Deklariert in `pyproject.toml` (`[project].dependencies`, Dev-Extra), aufgelöst in `uv.lock` (`uv lock`), installiert mit `uv sync --locked` (NFR-009). Zur Orientierung der Kern der Deklaration:
 
 ```txt
-# requirements.txt
+# pyproject.toml — [project].dependencies (Auszug)
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.10.0
@@ -2333,7 +2335,7 @@ bcrypt>=4.0                       # Passwort-Hashing (bcrypt direkt, siehe ADR-0
 slowapi>=0.1.9                    # Rate Limiting (nutzt Redis als Backend)
 cryptography>=42.0                # Fernet/AES-256 für Provider-Secret-Verschlüsselung
 
-# requirements-dev.txt
+# pyproject.toml — [project.optional-dependencies].dev (Auszug)
 pytest==7.4.3
 pytest-asyncio==0.21.1
 pytest-cov==4.1.0

@@ -91,7 +91,7 @@ jobs:
 
 ### Abhängigkeiten installieren
 
-Die Backend-Abhängigkeiten werden aus `uv.lock` installiert, dem Hash-tragenden Lock, das aus `pyproject.toml` aufgelöst wird (NFR-009). Der `[dev]`-Extra enthält pytest, ruff und weitere Entwicklungswerkzeuge:
+Die Backend-Abhängigkeiten werden aus `uv.lock` installiert, dem Hash-tragenden Lock, das aus `pyproject.toml` aufgelöst wird (interne Referenz: Dependency-Anforderung NFR-009). Der `[dev]`-Extra enthält pytest, ruff und weitere Entwicklungswerkzeuge:
 
 ```bash
 uv sync --locked --extra dev
@@ -199,13 +199,12 @@ Das Backend-Image basiert auf `python:3.14-slim` und nutzt ein Multi-Stage-Docke
 FROM python:3.14-slim AS base
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
-ENV UV_PYTHON=/usr/local/bin/python3 UV_PYTHON_DOWNLOADS=never PATH="/app/.venv/bin:$PATH"
+ENV UV_PYTHON=/usr/local/bin/python3 UV_PYTHON_DOWNLOADS=never UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml uv.lock ./
 
 FROM base AS prod
 RUN uv sync --locked --no-install-project
 COPY . .
-RUN uv sync --locked --no-editable
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -d /app -s /usr/sbin/nologin app \
     && chown -R 1000:1000 /app
 USER 1000
@@ -213,7 +212,7 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-Das Image wird nach `ghcr.io/nolte/kamerplanter-backend` gepusht. Abhängigkeiten kommen ausschließlich aus dem Hash-tragenden `uv.lock` (NFR-009): `uv sync --locked` verweigert ein Lock, das `pyproject.toml` nicht mehr erfüllt, und verifiziert jedes Artefakt gegen seinen Hash — der erste `uv sync` legt die Abhängigkeiten als eigene, cachebare Schicht an, der zweite fügt nur noch das Projekt hinzu.
+Das Image wird nach `ghcr.io/nolte/kamerplanter-backend` gepusht. Abhängigkeiten kommen ausschließlich aus dem Hash-tragenden `uv.lock` (interne Referenz: NFR-009): `uv sync --locked` verweigert ein Lock, das `pyproject.toml` nicht mehr erfüllt, und verifiziert jedes Artefakt gegen seinen Hash — die Abhängigkeiten liegen als eigene, cachebare Schicht unter `/opt/venv`, die Anwendung wird aus `/app` importiert.
 
 ### Frontend-Image {#frontend-image}
 

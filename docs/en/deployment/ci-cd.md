@@ -91,7 +91,7 @@ jobs:
 
 ### Installing dependencies
 
-Backend dependencies are installed from `uv.lock`, the hash-bearing lock resolved from `pyproject.toml` (NFR-009). The `[dev]` extra includes pytest, ruff, and other development tools:
+Backend dependencies are installed from `uv.lock`, the hash-bearing lock resolved from `pyproject.toml` (internal reference: dependency requirement NFR-009). The `[dev]` extra includes pytest, ruff, and other development tools:
 
 ```bash
 uv sync --locked --extra dev
@@ -199,13 +199,12 @@ The backend image is based on `python:3.14-slim` and uses a multi-stage Dockerfi
 FROM python:3.14-slim AS base
 WORKDIR /app
 COPY --from=ghcr.io/astral-sh/uv:0.12.12 /uv /bin/uv
-ENV UV_PYTHON=/usr/local/bin/python3 UV_PYTHON_DOWNLOADS=never PATH="/app/.venv/bin:$PATH"
+ENV UV_PYTHON=/usr/local/bin/python3 UV_PYTHON_DOWNLOADS=never UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml uv.lock ./
 
 FROM base AS prod
 RUN uv sync --locked --no-install-project
 COPY . .
-RUN uv sync --locked --no-editable
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -d /app -s /usr/sbin/nologin app \
     && chown -R 1000:1000 /app
 USER 1000
@@ -213,7 +212,7 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
-The image is pushed to `ghcr.io/nolte/kamerplanter-backend`. Dependencies come exclusively from the hash-bearing `uv.lock` (NFR-009): `uv sync --locked` refuses a lock that no longer satisfies `pyproject.toml` and verifies every artifact against its hash — the first `uv sync` lays down the dependencies as their own cacheable layer, the second adds only the project.
+The image is pushed to `ghcr.io/nolte/kamerplanter-backend`. Dependencies come exclusively from the hash-bearing `uv.lock` (internal reference: NFR-009): `uv sync --locked` refuses a lock that no longer satisfies `pyproject.toml` and verifies every artifact against its hash — the dependencies live in their own cacheable layer under `/opt/venv`, and the application is imported from `/app`.
 
 ### Frontend image {#frontend-image}
 

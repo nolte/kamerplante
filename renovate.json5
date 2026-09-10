@@ -96,18 +96,50 @@
     // #1303), so from 2026-08-02 it silently extracted nothing, the dashboard
     // showed `WARN: pip-compile error`, and the `poetry` manager picked the
     // pyproject up instead and opened source-only pull requests that left the
-    // locks stale (#1371). The three managers below are disabled for the
-    // backend so exactly one manager reads that file.
+    // locks stale (#1371). Poetry 2 reads PEP 621 `[project]` tables, so that
+    // manager is disabled for the backend and exactly one manager reads the
+    // file. (The side services' pyproject files are still read by `poetry`
+    // today; #1374 moves them to uv locks and this rule with them.)
     {
       matchManagers: [
         'poetry',
-        'pip_requirements',
-        'pip-compile',
       ],
       matchFileNames: [
         'src/backend/**',
       ],
       enabled: false,
+    },
+    // The uv toolchain is referenced three times — `[tool.uv].required-version`
+    // in pyproject.toml (what Renovate relocks with), `uv==` in the workflows
+    // (regex manager below) and `ghcr.io/astral-sh/uv` in the Dockerfile — and
+    // the three are only meaningful together: a relock by a newer uv than the
+    // readers is the #1296 class. One pull request moves all of them.
+    {
+      groupName: 'uv toolchain',
+      matchDatasources: [
+        'pypi',
+        'docker',
+      ],
+      matchPackageNames: [
+        'uv',
+        'ghcr.io/astral-sh/uv',
+      ],
+    },
+    // The build backend uv is constrained to for the two sdist-only backend
+    // dependencies (`[tool.uv].build-constraint-dependencies`), read by the
+    // regex manager below. Grouped so setuptools and wheel move together.
+    {
+      groupName: 'python build backend',
+      matchDatasources: [
+        'pypi',
+      ],
+      matchFileNames: [
+        'src/backend/pyproject.toml',
+      ],
+      matchPackageNames: [
+        'setuptools',
+        'wheel',
+      ],
     },
     // In-range releases (a minor or patch inside `>=x,<y`) never leave the
     // range, so with the default strategy Renovate would propose nothing and
@@ -284,30 +316,18 @@
     // browser the E2E suite drives; a green run is necessary but the merge
     // stays a decision.
     {
-      groupName: 'timescaledb image',
+      groupName: '{{depName}} image',
       matchDatasources: [
         'docker',
       ],
       matchPackageNames: [
         'timescale/timescaledb',
-      ],
-    },
-    {
-      groupName: 'arangodb image',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
         'arangodb',
-      ],
-    },
-    {
-      groupName: 'valkey image',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
         'valkey/valkey',
+        'ollama/ollama',
+        'nginxinc/nginx-unprivileged',
+        'python',
+        'node',
       ],
     },
     // selenium/hub and selenium/node-chrome version independently (4.x vs the
@@ -324,69 +344,22 @@
       ],
       separateMajorMinor: false,
     },
-    {
-      groupName: 'ollama image',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
-        'ollama/ollama',
-      ],
-    },
-    {
-      groupName: 'nginx-unprivileged image',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
-        'nginxinc/nginx-unprivileged',
-      ],
-    },
-    {
-      groupName: 'python image',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
-        'python',
-      ],
-    },
-    {
-      groupName: 'node image',
-      matchDatasources: [
-        'docker',
-      ],
-      matchPackageNames: [
-        'node',
-      ],
-    },
-    {
-      groupName: 'helm charts',
-      matchManagers: [
-        'helmv3',
-      ],
-    },
-    {
-      groupName: 'nodejs',
-      matchManagers: [
-        'asdf',
-      ],
-      matchPackageNames: [
-        'nodejs',
-      ],
-    },
-    {
-      groupName: 'security pinned versions',
-      matchFileNames: [
-        '.github/renovate-pins.yaml',
-      ],
-      labels: [
-        'dependencies',
-        'security',
-      ],
-    },
   ],
   customManagers: [
+    {
+      customType: 'regex',
+      description: 'Age the uv version pinned in [tool.uv].required-version and the build backend pinned in build-constraint-dependencies.',
+      managerFilePatterns: [
+        '/^src/backend/pyproject\\.toml$/',
+      ],
+      matchStrings: [
+        'required-version = "==(?<currentValue>[0-9][^"]*)"',
+        '"(?<depName>setuptools|wheel)==(?<currentValue>[0-9][^"]*)"',
+      ],
+      depNameTemplate: '{{#if depName}}{{depName}}{{else}}uv{{/if}}',
+      datasourceTemplate: 'pypi',
+      versioningTemplate: 'pep440',
+    },
     {
       customType: 'regex',
       description: 'Update pinned versions in .github/renovate-pins.yaml — read by security workflows.',

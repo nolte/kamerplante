@@ -165,17 +165,20 @@ class TestTheDockerfileAcceptsTheRevision:
         """Cache placement, asserted because it costs real build minutes.
 
         The revision changes on *every commit*. Anything below it is rebuilt every
-        time, so the `ARG`/`ENV` pair must come after the hash-verified `uv sync`
-        and after `COPY . .` — the two layers whose cache is worth keeping.
+        time, so the order must be: the hash-verified `uv sync` (dependencies,
+        the layer worth keeping across source edits), then `COPY . .`, then every
+        remaining `RUN` (chown/useradd), and only then the `ARG`/`ENV` pair.
         """
         prod = _dockerfile_stages()["prod"]
-        pip_install = _index_of(prod, lambda line: line.startswith("RUN uv sync"))
+        deps_sync = _index_of(prod, lambda line: line.startswith("RUN uv sync"))
         copy_source = _index_of(prod, lambda line: re.match(r"COPY\s+\.\s+\.\s*$", line) is not None)
+        last_run = max((i for i, line in enumerate(prod) if line.startswith("RUN ")), default=-1)
         arg_revision = _index_of(prod, lambda line: line.startswith("ARG BUILD_REVISION"))
 
-        assert pip_install != -1, "no `RUN uv sync` found in the prod stage — has the stage been restructured?"
+        assert deps_sync != -1, "no `RUN uv sync` found in the prod stage — has the stage been restructured?"
         assert copy_source != -1, "no `COPY . .` found in the prod stage — has the stage been restructured?"
-        assert arg_revision > pip_install, "ARG BUILD_REVISION above the uv sync layer invalidates it on every commit"
+        assert deps_sync < copy_source, "the dependency sync must precede `COPY . .`, or a source edit rebuilds it"
+        assert arg_revision > last_run, "ARG BUILD_REVISION above the last RUN layer invalidates it on every commit"
         assert arg_revision > copy_source, "ARG BUILD_REVISION above `COPY . .` invalidates it on every commit"
 
     def test_the_dev_target_gets_no_revision(self) -> None:

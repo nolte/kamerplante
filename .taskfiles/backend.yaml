@@ -125,11 +125,15 @@ tasks:
 
   deps:check:
     desc: |
-      Lock-staleness gate — and literally the thing CI runs (backend.yml "Lock
-      staleness" invokes this task): fail if src/backend/uv.lock does not
+      Lock-staleness gate — and the first half of what CI runs (backend.yml
+      "Lock staleness" invokes this task): fail if src/backend/uv.lock does not
       satisfy pyproject.toml, without touching the file. Catches a
-      pyproject.toml bump that was not re-locked, or a hand-edited lock
-      (NFR-009 §2.3). On failure run `task deps:compile` and commit the result.
+      pyproject.toml bump that was not re-locked (NFR-009 §2.3). It does NOT
+      catch a hand-edited hash or an in-range version swap inside the lock —
+      `uv lock --check` reads pyproject.toml and the lock's own metadata, not
+      the artifacts. `uv sync --locked` does (it verifies every recorded hash
+      on install), which is why the CI job runs both and `deps:sync` below is
+      the local equivalent. On failure run `task deps:compile` and commit.
     dir: src/backend
     cmds:
       - uv lock --check

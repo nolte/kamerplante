@@ -116,7 +116,7 @@ Das Projekt folgt den Grundsätzen des [Semantic Versioning 2.0.0](https://semve
 
 **MUSS**: `package-lock.json` wird bei jedem Dependency-Update mit aktualisiert.
 **MUSS**: `uv.lock` wird über `uv lock` aus `pyproject.toml` generiert — manuelle Bearbeitung ist nicht erlaubt. Die Version von uv ist in `[tool.uv].required-version` verankert; Dockerfile, CI und Renovate lesen dieselbe Untergrenze.
-**MUSS**: CI prüft die Integrität der Lockfiles (`npm ci` statt `npm install`; `uv lock --check` als Gate und `uv sync --locked` statt `pip install .` — `--locked` verweigert ein Lock, das `pyproject.toml` nicht mehr erfüllt, und verifiziert jedes Artefakt gegen den im Lock hinterlegten Hash).
+**MUSS**: CI prüft die Integrität der Lockfiles (`npm ci` statt `npm install`; für Python beides: `uv lock --check` gegen `pyproject.toml` UND `uv sync --locked`, das jedes Artefakt gegen den im Lock hinterlegten Hash verifiziert — `uv lock --check` allein erkennt einen von Hand geänderten Hash nicht).
 
 ```bash
 # Python: Lockfile generieren bzw. prüfen
@@ -509,9 +509,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - run: pip install pip-audit
-      - run: pip install -r requirements.txt
-      - run: pip-audit --strict --desc
+      - run: pip install pip-audit 'uv==0.12.12'
+      - run: uv export --locked --no-emit-project --format requirements.txt -o /tmp/requirements.txt
+      - run: pip-audit --strict --desc --no-deps -r /tmp/requirements.txt
 ```
 
 ### 4.2 Kritische Sicherheitsupdates — SLA
@@ -597,7 +597,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - run: pip install -r requirements-dev.txt
+      - run: uv sync --locked --extra dev && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy app/
@@ -628,7 +628,7 @@ jobs:
 | Artefakt | Befehl | Prüft |
 |---|---|---|
 | Frontend-Bundle | `npm run build` | Vite-Build, Tree-Shaking, TypeScript-Kompilierung |
-| Backend-Package | `pip install -r requirements.txt && pip install --no-deps .` | Lock-Installierbarkeit, Import-Prüfung |
+| Backend-Package | `uv sync --locked` | Lock-Installierbarkeit (hash-verifiziert), Import-Prüfung |
 | Docker-Images | `docker build .` | Base-Image-Kompatibilität, Multi-Stage-Build |
 | Helm Chart | `helm lint helm/` | Chart-Validität, Values-Schema |
 

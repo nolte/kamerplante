@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+build-constraints = [
+    { name = "setuptools", specifier = "==84.0.0" },
+    { name = "wheel", specifier = "==0.48.0" },
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"

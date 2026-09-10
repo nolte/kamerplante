@@ -150,10 +150,10 @@ there is no workflow step to carry it into an issue: :data:`EXIT_OK` for
 :data:`EXIT_UNDETERMINED` for anything undetermined, :data:`EXIT_USAGE` for a
 bad invocation.
 
-The registry plumbing below deliberately duplicates
-``check_digest_freshness.py`` rather than importing it: the two answer different
-questions of the same registry on different schedules, and a change to the
-pin-freshness job must not silently alter this one.
+The registry plumbing below is deliberately self-contained (it used to
+duplicate the since-removed ``check_digest_freshness.py`` rather than import it):
+this script answers one question of the registry on its own schedule, and no
+sibling lane can silently alter it.
 """
 
 from __future__ import annotations

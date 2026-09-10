@@ -466,7 +466,7 @@ repos:
   # marker rather than a ban — the 19 sites in the tree carry one, and eight of
   # them say "needs follow-up" instead of pretending to be settled.
   #
-  # `language: python` with PyYAML, like the chart-digest hook below: the
+  # `language: python` with PyYAML: the
   # required `static` job runs on a bare runner with none of the project's
   # dependencies installed. always_run, because deleting a workflow moves the
   # answer as much as editing one.

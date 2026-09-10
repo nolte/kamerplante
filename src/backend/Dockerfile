@@ -18,14 +18,19 @@ WORKDIR /app
 # image above. The environment pins uv to the interpreter this image ships —
 # no managed-Python download, no cache layer to carry, bytecode compiled once at
 # build time — and puts the project environment on PATH so the CMD lines below
-# resolve `uvicorn` without an activation step.
+# resolve `uvicorn` without an activation step. The environment lives in
+# /opt/venv, OUTSIDE /app, on purpose: the stages below `chown -R 1000:1000 /app`
+# for the source tree, and a venv under /app would (a) be copied wholesale into
+# that chown layer (~420 MB per build, measured) and (b) leave site-packages
+# writable by the UID the server runs as.
 COPY --from=ghcr.io/astral-sh/uv:0.12.12@sha256:73d2665b478d8fa2de1cf105c6841f8e9cb6b09e568fc7700440c09f8fcd7ac4 /uv /bin/uv
 ENV UV_PYTHON=/usr/local/bin/python3 \
     UV_PYTHON_DOWNLOADS=never \
     UV_NO_CACHE=1 \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
-    PATH="/app/.venv/bin:$PATH"
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
 
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,27 +48,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the abstract source (pyproject.toml) and the compiled locks up front so
-# the dependency-install layers are cached independently of application code.
-# The locks are the single source of truth for what actually gets installed
-# (NFR-009 §2.3/§6.1); pyproject.toml is only used for the app package itself.
+# Copy the abstract source (pyproject.toml) and the lock up front so the
+# dependency-install layer is cached independently of application code. The
+# lock is the single source of truth for what actually gets installed
+# (NFR-009 §2.3/§6.1).
 COPY pyproject.toml uv.lock ./
 
 # ── Development target: hot-reload + debugpy (skaffold dev syncs app/**/*.py) ──
 # Runs as root by design; values-dev.yaml sets runAsUser:0 for the writable
 # rootfs the hot-reload/__pycache__ needs.
 FROM base AS dev
-# Install the pinned, hash-verified dev lock, then add the app package itself as
-# an editable install with --no-deps (deps already satisfied from the lock).
-# Editable keeps hot-reload working while the install set stays reproducible.
-# hadolint ignore=DL3013
 # Two syncs on purpose: the first installs the locked dependency set from the
 # two files copied above (a cacheable layer that survives source edits), the
 # second adds the project itself — editable, so the bind mount in Skaffold dev
 # is what runs. `--locked` verifies the lock against pyproject.toml and every
 # artifact against its recorded hash; a stale lock or a tampered wheel fails the
 # build instead of installing something else. debugpy goes in last because
-# `uv sync` makes the environment exact and would otherwise remove it again.
+# `uv sync` makes the environment exact and would otherwise remove it again; it
+# is the one package outside the lock, as it was under pip.
 RUN uv sync --locked --extra dev --no-install-project
 COPY . .
 RUN uv sync --locked --extra dev \
@@ -80,17 +82,16 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload
 
 # ── Production target (default; last stage, so CI's untargeted build picks it) ──
 FROM base AS prod
-# Install the exact pinned, hash-verified dependency set from the lock, then add
-# the app package with --no-deps so nothing is re-resolved from PyPI. This makes
-# the shipped image reproducible: two builds of the same commit install byte-for-
-# byte the same wheels (NFR-009 §2.3/§6.1). Hash pinning verified feasible for
-# all native wheels (weasyprint, psycopg[binary], aquacropeto) on Python 3.14.
-# Same two-step shape as dev, minus the dev extra and with the project
-# installed non-editable: the image runs the packaged copy, not a path back
-# into /app/app.
+# One sync, dependencies only: the application is imported from /app (the
+# working directory, which uvicorn and celery put on sys.path), exactly as it
+# was when `pip install --no-deps .` sat beside `COPY . .`. Not building the
+# project wheel also keeps the build backend out of the prod image build; the
+# two sdist-only dependencies still need one, pinned through
+# `[tool.uv].build-constraint-dependencies` in pyproject.toml. `--locked`
+# verifies every artifact hash, so two builds of one commit install the same
+# bytes (NFR-009 §2.3/§6.1).
 RUN uv sync --locked --no-install-project
 COPY . .
-RUN uv sync --locked --no-editable
 # Run as a non-root numeric user. UID 1000 matches the deployment's
 # fsGroup:1000 so the mounted attachments PVC stays writable.
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -d /app -s /usr/sbin/nologin app \

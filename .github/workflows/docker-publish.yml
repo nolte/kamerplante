@@ -878,8 +878,13 @@ jobs:
         # file. Until 2026-09-10 it ran in the required `static` gate against
         # develop-side `latest@sha256` pins that Renovate maintained; those pins
         # fed no deployment and are gone, so the guard moved to the only place a
-        # pin now exists — the release.
-        run: python3 scripts/check_chart_image_digests.py
+        # pin now exists — the release. The runner's interpreter ships without
+        # PyYAML (the pre-commit hook this replaces declared it as an
+        # additional_dependency for the same reason), so it is installed here,
+        # pinned like every other tool.
+        run: |
+          python3 -m pip install --quiet 'PyYAML==6.0.3'
+          python3 scripts/check_chart_image_digests.py
 
       # TWO logins to the same registry, and both are load-bearing (#1218).
       #

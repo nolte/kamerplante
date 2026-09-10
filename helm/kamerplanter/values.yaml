@@ -8,12 +8,18 @@
 # that is exact and cheap: the kubelet never re-resolves a tag, because a digest
 # cannot move.
 #
-# In THIS tree the tag is ``latest``, and this tree is not a deploy channel: the
-# chart version here is ``-dev``, its OCI tag is rewritten by every ``helm/``
-# merge, and no deployment points at it (docs/deployment/ci-cd.md, "Zwei
-# Kanäle"). Until 2026-09-10 the develop tree carried ``latest@sha256:…`` too,
-# kept current by a Renovate rule; that fed nothing and its pull request was
-# rebased by every publish and never merged (#1326), so it was removed.
+# In THIS tree the tag is ``latest``. Two things read this tree, and neither
+# resolves that tag: Skaffold deploys it into the dev cluster with every owned
+# image reference — main containers AND the frontend init container —
+# overridden by ``setValueTemplates`` in skaffold.yaml to the locally built
+# image; and docker-publish packages it as the ``-dev`` chart, whose OCI tag is
+# rewritten by every ``helm/`` merge and which no deployment points at
+# (docs/deployment/ci-cd.md, "Zwei Kanäle"). Until 2026-09-10 the develop tree
+# carried ``latest@sha256:…`` too, kept current by a Renovate rule; that fed
+# nothing and its pull request was rebased by every publish and never merged
+# (#1326), so it was removed. A new owned image reference here MUST be added
+# to skaffold.yaml's overrides, or the dev cluster pulls ghcr.io's ``latest``
+# with ``IfNotPresent`` — the cache trap described below.
 #
 # **A deployment overlay must NOT add a per-controller ``image.tag`` override.**
 # Doing so replaces a digest with a mutable tag, and ``IfNotPresent`` then means
@@ -123,8 +129,9 @@ defaultPodOptions:
 # explicit `IfNotPresent` beats the implicit `Always` Kubernetes applies to a
 # `:latest` reference, so a node with a cached `latest` keeps serving the old
 # image straight through a `rollout restart` (that is how the inference-service
-# answered 404 on the pest routes for weeks). Which is one more reason this
-# tree, where the tag IS `latest`, must not be deployed.
+# answered 404 on the pest routes for weeks). Which is why every owned
+# reference in this tree, where the tag IS `latest`, is overridden by Skaffold
+# and why nothing else deploys it.
 controllers:
   backend:
     type: deployment
