@@ -34,5 +34,5 @@ dependencies:
     condition: valkey.enabled
   - name: ollama
     repository: https://otwld.github.io/ollama-helm/
-    version: 1.62.0
+    version: 1.80.0
     condition: ollama.enabled
