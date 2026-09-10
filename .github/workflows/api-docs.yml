@@ -48,7 +48,7 @@ jobs:
       - name: Install dependencies
         # Pinned, hash-verified lock — same install truth as backend.yml.
         run: |
-          python -m pip install 'uv==0.12.12'
+          python -m pip install 'uv==0.12.13'
           uv sync --locked
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 

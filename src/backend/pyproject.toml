@@ -106,7 +106,7 @@ target-version = ["py314"]
 # apart) all over again. renovate.json5 groups all three references into one
 # `uv toolchain` pull request. Contributors: `uv self update 0.12.12`, or run
 # the Taskfile targets through `uvx --from 'uv==0.12.12' uv …`.
-required-version = "==0.12.12"
+required-version = "==0.12.13"
 # Two runtime dependencies ship as sdists only (aquacropeto, http-ece via
 # pywebpush), so `uv sync` builds them. Without this their `[build-system]`
 # requires would be fetched unpinned at every image build — the floating input
