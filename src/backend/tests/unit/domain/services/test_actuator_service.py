@@ -34,7 +34,7 @@ from app.domain.models.actuator import (
     RuleCondition,
     ScheduleEntry,
 )
-from app.domain.models.site import Location
+from app.domain.models.site import Location, Site
 from app.domain.models.task import Task
 from app.domain.services.actuator_service import ActuatorService
 
@@ -51,7 +51,9 @@ class FakeActuatorRepo:
         self.active_rules: list[ControlRule] = []
         self.active_schedules: list[ControlSchedule] = []
         self.active_override: ManualOverride | None = None
-        self.location = Location(_key="loc1", tenant_key="t1", name="Zelt 1", area_m2=2.0)
+        # No ``tenant_key``: that is what the write path stores (#1397). The
+        # tenant lives on the parent site, served by ``FakeSiteRepo`` below.
+        self.location = Location(_key="loc1", name="Zelt 1", area_m2=2.0, site_key="site1")
         self._seq = 0
 
     def _next(self, prefix):
@@ -232,11 +234,32 @@ def repo():
     return FakeActuatorRepo()
 
 
+class FakeSiteRepo:
+    """Sites for the ownership anchor (#1397).
+
+    ``site1`` belongs to ``t1``; every other key belongs to someone else. A
+    single site that answered for any key would let a guard pass on a foreign
+    location, which is the case ``test_create_on_foreign_location_rejected``
+    exists to catch.
+    """
+
+    def get_site_by_key(self, key):
+        tenant = "t1" if key == "site1" else "other-tenant"
+        return Site(_key=key, tenant_key=tenant, name=key, site_type="indoor")
+
+    def get_location_by_key(self, key):  # pragma: no cover - unused by this service
+        return None
+
+    def get_slot_by_key(self, key):  # pragma: no cover - unused by this service
+        return None
+
+
 def _service(repo, ha=None, task_repo=None):
     return ActuatorService(
         repo,
         ha_client_factory=(lambda: ha) if ha is not None else None,
         task_repo=task_repo,
+        site_repo=FakeSiteRepo(),
     )
 
 
@@ -290,7 +313,7 @@ class TestTenantIsolation:
             service.get_actuator("act1", "other-tenant")
 
     def test_create_on_foreign_location_rejected(self, repo):
-        repo.location = Location(_key="loc1", tenant_key="foreign", name="x", area_m2=1.0)
+        repo.location = Location(_key="loc1", name="x", area_m2=1.0, site_key="site_foreign")
         service = _service(repo, ha=FakeHaClient())
         actuator = _ha_actuator()
         with pytest.raises(NotFoundError):

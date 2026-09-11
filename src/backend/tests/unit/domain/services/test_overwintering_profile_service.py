@@ -15,7 +15,7 @@ from app.common.exceptions import DuplicateError, NotFoundError, ValidationError
 from app.domain.interfaces.overwintering_profile_repository import IOverwinteringProfileRepository
 from app.domain.models.overwintering_profile import OverwinteringProfile
 from app.domain.models.plant_instance import PlantInstance
-from app.domain.models.site import Location
+from app.domain.models.site import Location, Site
 from app.domain.services.overwintering_profile_service import OverwinteringProfileService
 
 
@@ -200,7 +200,10 @@ class TestForeignKeyOwnership:
 
         class SiteRepoStub:
             def get_location_by_key(self, key):
-                return Location(_key=key, name="Foreign shed", area_m2=1.0, tenant_key="other_tenant")
+                return Location(_key=key, name="Foreign shed", area_m2=1.0, site_key="site_foreign")
+
+            def get_site_by_key(self, key):
+                return Site(_key=key, tenant_key="other_tenant", name="Woanders", site_type="indoor")
 
         service = OverwinteringProfileService(repo, site_repo=SiteRepoStub())
         profile = _profile(
@@ -238,10 +241,16 @@ class _ForeignSiteRepoStub:
     """Every location resolves to another tenant's location."""
 
     def get_location_by_key(self, key):  # noqa: ANN001, ANN201
-        return Location(_key=key, name="Foreign shed", area_m2=1.0, tenant_key="other_tenant")
+        return Location(_key=key, name="Foreign shed", area_m2=1.0, site_key="site_foreign")
 
     def get_site_by_key(self, key):  # noqa: ANN001, ANN201
-        return None
+        """A real site owned by someone else, not a missing one.
+
+        "Absent" and "foreign" must both be refused, but only the second is what
+        this stub is named for — and a stub that answers ``None`` would pass even
+        against a guard that merely checks the site exists.
+        """
+        return Site(_key=key, tenant_key="other_tenant", name="Woanders", site_type="indoor")
 
 
 class TestCreateSiteFrostGuard:
@@ -587,8 +596,18 @@ class TestHardinessOverview:
                 return SimpleNamespace(scientific_name="Solanum lycopersicum", common_names=["Tomate"])
 
         class _SiteRepo:
+            """Stores what the write path stores: no ``tenant_key`` on the row.
+
+            The tenant lives on the parent site (#1397). With ``tenant_key=TENANT``
+            invented on the location, this test passed while the label condition
+            in the service could never be true — it certified inert code.
+            """
+
             def get_location_by_key(self, key):  # noqa: ANN001, ANN201
-                return Location(_key=key, name="Balkon Süd", area_m2=1.0, tenant_key=TENANT)
+                return Location(_key=key, name="Balkon Süd", area_m2=1.0, site_key="site_own")
+
+            def get_site_by_key(self, key):  # noqa: ANN001, ANN201
+                return Site(_key=key, tenant_key=TENANT, name="Zuhause", site_type="indoor")
 
         self._seed_red_profile(repo, plant_key="p_red")
         service = OverwinteringProfileService(

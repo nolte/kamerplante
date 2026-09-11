@@ -20,7 +20,7 @@ from app.common.enums import (
     TransitionTrigger,
     TransitionTriggerType,
 )
-from app.domain.models.site import Location
+from app.domain.models.site import Location, Site
 from app.domain.services.phase_service import SequenceAutoTarget
 
 
@@ -72,11 +72,17 @@ def _plant(**overrides):
 
 
 def _indoor_location(**overrides):
-    """A grow-tent Location with an artificial light schedule (REQ-018)."""
+    """A grow-tent Location with an artificial light schedule (REQ-018).
+
+    No ``tenant_key`` on the row: the write path never fills it (#1397), and the
+    tenant is read from the parent site. A fixture that invents it made the
+    SEC-B4 guard in ``_indoor_day_length_for_plant`` look exercised while the
+    guard itself short-circuited on that very field and trusted every location.
+    """
     data = {
         "name": "Tent 1",
         "area_m2": 1.5,
-        "tenant_key": "tenant_1",
+        "site_key": "site_1",
         "light_type": LightType.LED,
         "lights_on": "18:00",
         "lights_off": "06:00",  # 12h (12/12 bloom flip)
@@ -84,6 +90,19 @@ def _indoor_location(**overrides):
     }
     data.update(overrides)
     return Location(**data)
+
+
+def _serve_own_site(deps) -> None:
+    """Let the site repository double answer the ownership walk (#1397).
+
+    ``site_1`` belongs to ``tenant_1``, which is the tenant the plants in these
+    tests carry — so the SEC-B4 guard admits the location instead of skipping it,
+    and the photoperiod trigger is reached. A double that answered for any key
+    would make the guard untestable from here.
+    """
+    deps.get_site_repo.return_value.get_site_by_key.side_effect = lambda key: (
+        Site(_key=key, tenant_key="tenant_1", name=key, site_type="indoor") if key == "site_1" else None
+    )
 
 
 def _photoperiod_phase_service(days_in_phase: int = 5):
@@ -305,6 +324,7 @@ class TestCheckAutoTransitions:
         shorter than the species' critical day length (13h)."""
         module, deps = _task_module
         deps.get_plant_repo.return_value.get_all.return_value = ([_plant(location_key="loc_1")], 1)
+        _serve_own_site(deps)
         deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location()
         deps.get_lifecycle_repo.return_value.get_lifecycle_by_species.return_value = self._lifecycle()
         deps.get_phase_service.return_value = phase_service = _photoperiod_phase_service()
@@ -322,6 +342,7 @@ class TestCheckAutoTransitions:
         module, deps = _task_module
         deps.get_plant_repo.return_value.get_all.return_value = ([_plant(location_key="loc_1")], 1)
         # 06:00 -> 00:00 = 18h
+        _serve_own_site(deps)
         deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location(
             lights_on="06:00", lights_off="00:00"
         )
@@ -344,6 +365,7 @@ class TestCheckAutoTransitions:
         module, deps = _task_module
         deps.get_plant_repo.return_value.get_all.return_value = ([_plant(location_key="loc_1", site_key=None)], 1)
         # 12h schedule would fire short-day, but dynamic sunrise disqualifies it
+        _serve_own_site(deps)
         deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location(use_dynamic_sunrise=True)
         deps.get_lifecycle_repo.return_value.get_lifecycle_by_species.return_value = self._lifecycle()
         deps.get_phase_service.return_value = phase_service = _photoperiod_phase_service()
@@ -358,6 +380,7 @@ class TestCheckAutoTransitions:
         photoperiod; with no GPS site the trigger is skipped."""
         module, deps = _task_module
         deps.get_plant_repo.return_value.get_all.return_value = ([_plant(location_key="loc_1", site_key=None)], 1)
+        _serve_own_site(deps)
         deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location(
             light_type=LightType.NATURAL
         )
@@ -375,6 +398,7 @@ class TestCheckAutoTransitions:
         present — the evaluator only fires short-/long-day species."""
         module, deps = _task_module
         deps.get_plant_repo.return_value.get_all.return_value = ([_plant(location_key="loc_1")], 1)
+        _serve_own_site(deps)
         deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location()
         deps.get_lifecycle_repo.return_value.get_lifecycle_by_species.return_value = self._lifecycle(
             photoperiod_type=PhotoperiodType.DAY_NEUTRAL, critical_day_length_hours=None
@@ -510,7 +534,13 @@ class TestCheckAutoTransitions:
             [_plant(location_key="loc_1", tenant_key="tenant_1", site_key=None)],
             1,
         )
-        deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location(tenant_key="tenant_2")
+        _serve_own_site(deps)
+        # "Foreign" is now expressed the way the data expresses it: a location
+        # under a site this tenant does not own. Written as ``tenant_key="tenant_2"``
+        # on the location itself, this test passed while the guard it covers was
+        # inert in production — the field is persisted empty there (#1397), so the
+        # condition short-circuited and every location was trusted.
+        deps.get_site_repo.return_value.get_location_by_key.return_value = _indoor_location(site_key="site_2")
         deps.get_lifecycle_repo.return_value.get_lifecycle_by_species.return_value = self._lifecycle()
         deps.get_phase_service.return_value = phase_service = _photoperiod_phase_service()
 

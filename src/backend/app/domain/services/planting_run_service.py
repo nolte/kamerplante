@@ -17,6 +17,7 @@ from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.models.phase import PhaseHistory
 from app.domain.models.plant_instance import PlantInstance
 from app.domain.models.planting_run import PlantingRun, PlantingRunEntry
+from app.domain.services.location_ownership import resolve_owned_location
 
 
 class PlantingRunService:
@@ -97,6 +98,7 @@ class PlantingRunService:
 
     def create_run(self, run: PlantingRun, entries: list[PlantingRunEntry] | None = None) -> PlantingRun:
         run.status = PlantingRunStatus.PLANNED
+        self._require_owned_location(run)
         if run.clone_from_run_key:
             entries = self._apply_clone_config(run, entries)
         total_qty = 0
@@ -157,10 +159,51 @@ class PlantingRunService:
             ]
         return entries
 
+    def _require_owned_location(self, run: PlantingRun) -> None:
+        """Refuse a ``location_key`` that is not under the run's own tenant (#1372).
+
+        Nothing verified this, and everything downstream reads the location
+        **unscoped**: ``create_plants`` asks ``get_existing_ids_at_location`` and
+        ``_get_available_slots`` for the foreign location's plants and slots, writes
+        each batch instance with ``self._plant_repo.create`` — bypassing
+        :meth:`PlantInstanceService.create_plant` and therefore the #1349 resolution
+        entirely — and then sets ``currently_occupied`` on the other tenant's slot.
+
+        The rotation and companion guards do not catch it: they read the slot's
+        neighbourhood tenant-scoped, so a foreign slot yields no findings and
+        **passes**. The reference has to be refused before it is interpreted, which
+        is the same ordering #1349 records for the single-plant path.
+
+        Anchored on the parent site, never on ``Location.tenant_key`` (#1397): that
+        field is persisted empty, and a guard written against it refuses every
+        location — the over-rejecting failure #1352 measured.
+
+        Skipped for a run with no tenant (seeds, migrations, light mode) and for a
+        run with no location, matching the rest of this service.
+        """
+        self._require_owned_location_key(run.location_key, run.tenant_key)
+
+    def _require_owned_location_key(self, location_key: str | None, tenant_key: str) -> None:
+        """The same rule, applied to a value rather than to a built run.
+
+        ``update_run`` needs it before it assigns, and ``create_run`` after it has
+        a run — one predicate either way, so the two entry points cannot drift.
+        """
+        if not tenant_key or not location_key or self._site_repo is None:
+            return
+        resolve_owned_location(self._site_repo, location_key, tenant_key)
+
     def update_run(self, key: PlantingRunKey, data: dict) -> PlantingRun:
         run = self.get_run(key)
         old_location_key = run.location_key
         allowed_fields = {"name", "notes", "planned_start_date", "location_key"}
+        # Resolved from the incoming value, before the model is touched (#1372).
+        # Checking the mutated ``run`` instead would be correct against the
+        # repository — which deserialises a fresh model per read — and would leave
+        # the caller's in-memory run carrying a key that was refused. Refusing the
+        # value itself has no such seam.
+        if "location_key" in data:
+            self._require_owned_location_key(data["location_key"], run.tenant_key)
         for field, value in data.items():
             if field in allowed_fields:
                 setattr(run, field, value)
