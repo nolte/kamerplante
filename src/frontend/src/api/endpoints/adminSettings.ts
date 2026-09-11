@@ -159,9 +159,12 @@ export async function clearPlantIdentificationSettings(): Promise<void> {
 
 /**
  * GET /admin/settings/storage → effective object-storage configuration
- * (NFR-013). Platform-admin-only (SEC-001): the storage-infra block is no longer
- * embedded in the general `GET /admin/settings`, which any authenticated user
- * can read; it lives behind this dedicated, gated endpoint instead.
+ * (NFR-013). Platform-admin-only (SEC-001): the storage-infra block is kept out
+ * of the general `GET /admin/settings` payload and served here instead. Both are
+ * platform-admin-only since #1385 — this used to add "which any authenticated
+ * user can read", which is what #1385 fixed — and the separation still holds,
+ * because two readers of one payload are how a field ends up served to the wider
+ * of the two audiences.
  */
 export async function getStorageSettings(): Promise<StorageSettingsResponse> {
   const { data } = await client.get<StorageSettingsResponse>(`${BASE}/storage`);

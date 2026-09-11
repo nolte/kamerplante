@@ -92,11 +92,19 @@ api_router.include_router(admin_settings_router)
 # (light-mode-aware, like admin/settings/storage), so it is mode-agnostic and
 # registered once for both light and full mode.
 api_router.include_router(weather_providers_admin_router)
-# Recognition status is read-only + get_current_user-gated, like admin settings —
-# available in both light and full mode (the inference feature itself is optional).
+# Recognition admin, available in both light and full mode (the inference feature
+# itself is optional). This comment used to read "read-only + get_current_user-gated,
+# like admin settings"; both halves stopped being true. Admin settings is
+# platform-admin-gated since #1385, and this router is not read-only — POST
+# /admin/recognition/acquire dispatches an installation-wide acquisition run over
+# every species, on `get_current_user` alone, while the `pests_admin_router`
+# mounted three lines below gates its identical /acquire on require_platform_admin.
+# Tracked with the rest of the write-route sweep in #1353.
 api_router.include_router(recognition_admin_router)
-# REQ-044 pest few-shot index admin (coverage, gallery, acquisition). Like
-# recognition admin: platform-admin-gated, available in light + full mode.
+# REQ-044 pest few-shot index admin (coverage, gallery, acquisition).
+# Platform-admin-gated, available in light + full mode. Not "like recognition
+# admin", which this used to say: that router's /acquire carries only
+# get_current_user (see above) — this one is the correct side of the pair.
 api_router.include_router(pests_admin_router)
 # Reference-image acquisition + manual curation (REQ-029-A) belongs to the same
 # optional inference feature and is available in both modes. Its endpoints are

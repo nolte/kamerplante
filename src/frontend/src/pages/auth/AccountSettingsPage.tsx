@@ -1512,9 +1512,16 @@ export default function AccountSettingsPage() {
 
           {/* Self-hosted DINOv2 recognition status — REQ-029-A. Visible to any
               signed-in user, unlike the Pl@ntNet section above, which #1385 put
-              behind the platform-admin gate: this card is read-only, discloses no
-              endpoint or credential, and degrades to a discreet hint when the
-              feature is off. */}
+              behind the platform-admin gate.
+              An earlier version of this comment justified that with "read-only,
+              discloses no endpoint or credential". Both halves were wrong, and the
+              pre-merge review of #1385 caught it: the card renders an acquire
+              button that POSTs /admin/recognition/acquire (gated on
+              get_current_user alone, unlike the identical /acquire on the
+              admin/pests sibling), and GET /admin/recognition/status returns
+              settings.inference_service_url. It stays here for now because gating
+              the card without gating the route is half a repair; both happen
+              together in #1353. */}
           <RecognitionStatusCard gridColumn="1 / -1" />
           <PestRecognitionAdminCard gridColumn="1 / -1" />
           {/* REQ-010 / SEC-003 — moderate user-contributed pest photos and
