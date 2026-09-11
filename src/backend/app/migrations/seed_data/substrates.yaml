@@ -26,6 +26,35 @@
 # A citation is also a legitimate way to CONFIRM a value that was doubted; see
 # `Plagron Allmix` below, whose EC an issue reported as too high and the
 # manufacturer's published range says is correct.
+#
+# pH CONVENTION (stated with #1175, because #1332 found the file silent on it)
+# --------------------------------------------------------------------------
+# `ph_base` is the pH of a WATER extract (pH-H₂O). Not CaCl₂. The extraction
+# ratio is not fixed by this catalogue and is recorded per source where the
+# source states it: Plagron publishes at 1:1.5 v/v (the RHP method), EN 13037
+# specifies 1:5 v/v, a saturated-media extract is a third. Those differ by
+# tenths of a unit; H₂O against CaCl₂ differs by half a unit to a whole one
+# (LECHUZA-PON declares 8.2 against 7.1; LVG Hannover-Ahlem measured Sphagnum
+# at 3.2–3.4 in CaCl₂ where the water-extract literature says 3.5–4.5), and
+# that is the difference that has to be pinned.
+#
+# Why water and not CaCl₂, given that German declarations (DüMV) tend to state
+# CaCl₂: every consumer of this field compares it against a water measurement.
+# `SubstrateLifecycleManager` reads it beside a batch's `ph_history`, which a
+# grower fills from a meter in run-off or a slurry; `calculate_mix_properties`
+# averages it into a mix a grower then measures the same way; the MCP feeding
+# judgement passes it to a model reasoning in the grower's units. A CaCl₂ value
+# would read as "this medium is half a unit more acidic than your meter says".
+# The three sourced Plagron records are water-extract values, and the generic
+# records (white peat 3.8, sphagnum 4.2, coco 6.0) sit in the water-extract
+# literature ranges, not the CaCl₂ ones. So the convention is the one the data
+# already mostly followed; what was missing was the sentence.
+#
+# Consequences: a manufacturer that declares both is cited at its H₂O value
+# (LECHUZA-PON below, 6.8 → 8.2). A record whose only source is CaCl₂ is NOT
+# converted — the offset is medium-dependent — and stays an open item. BioBizz
+# publishes pH ranges without naming a method; those records are unsourced on
+# this axis, not outliers.
 
 substrates:
   # ── Soil-based ──────────────────────────────────────────────────────
@@ -283,14 +312,24 @@ substrates:
     brand: "Lechuza"
     name_de: "Lechuza PON (Mineralsubstrat)"
     name_en: "Lechuza PON (Mineral Substrate)"
-    # NOT changed, and the source is why. The declaration below states two pH
-    # figures under two methods — "pH-Wert (H₂O): 8,2" and "pH-Wert (CaCl₂): 7,1" —
-    # and this field does not say which convention it uses. The Plagron records in
-    # this file match that manufacturer's published 1:1.5 extract, so the file is
-    # not even consistent on one method. Picking 8.2 over 7.1 here would be a coin
-    # flip dressed as a citation. Settling the pH convention for the whole
-    # catalogue is its own piece of work; until then 6.8 stands as an open item.
-    ph_base: 6.8
+    # Was 6.8 — inside REQ-019's generic "pH-neutral (6.0–7.0)" line for the type,
+    # and matching neither figure the manufacturer declares. The declaration
+    # states two, under two methods: "pH-Wert (H₂O): 8,2" and "pH-Wert (CaCl₂):
+    # 7,1". #1332 left it because this file did not say which convention
+    # `ph_base` uses; the header now does (water extract), so the H₂O figure is
+    # the one that belongs here — the sentence that settles the field settles the
+    # record, and it is no longer a coin flip. 8.2 is alkaline, which is what a
+    # pumice/lava/zeolite granulate is; REQ-019's "6.0–7.0" describes the type,
+    # this is a product record with a declaration.
+    #
+    # Source: LECHUZA (geobra Brandstätter), product declaration
+    # "LECHUZA-PON 3 L, 6 L, 12 L, 18 L, 30 L" (EU 2019/1009 Düngeprodukt-
+    # Deklaration, PFC 7), retrieved 2026-09-03 —
+    # https://media.lechuza.com/lechuza-declaration-lechuza-pon.pdf
+    # "Produktspezifische Deklaration: Elektrische Leitfähigkeit (EC): 5 mS/m /
+    #  pH-Wert (H₂O): 8,2 / K₂O (Kaliumoxid CAT): 170 mg/l"
+    # "pH-Wert (CaCl₂): 7,1"
+    ph_base: 8.2
     # Was 0.0, which contradicted the 5 % `langzeitduenger` two blocks down
     # (#1152 §B). #1152 could not tell which half was wrong; the manufacturer's
     # declaration settles both. It lists the fertiliser as an ingredient, so the
@@ -341,15 +380,82 @@ substrates:
     ph_base: 4.2
     ec_base_ms: 0.05
     water_retention: high
-    air_porosity_percent: 25.0
+    # Was 25.0, with water_holding 80.0: 105 % of one pore space (#1152 §A), and
+    # the last `_KNOWN_OPEN` entry. #1332 searched and found no air/water pair.
+    # This pair is measured on dried Sphagnum at this record's own bulk density,
+    # under the convention the field is defined in: container capacity is the
+    # water held against -10 hPa (pF 1), which is what EN 13041 measures and what
+    # the peat and coco records here are consistent with.
+    #
+    # Kämäräinen et al. re-packed dried Sphagnum LOOSELY at 40 mm fibre length —
+    # the closest analogue to a bag of dried long-fibre moss — and it settled at
+    # a bulk density of ≈30 g/dm³ (Figure 5, top left), i.e. this record's 30 g/L.
+    # Its water content at pF 1 is ≈28 vol-% (Figure 5, top right; read from the
+    # chart, ±2). Total porosity is printed: 97.4–97.8 %. Air capacity is, in the
+    # paper's own definition, total pore volume minus water at pF 1:
+    # 97.6 − 28 ≈ 70 vol-%.
+    #
+    # Why the old 80 was not simply "wrong": it is the OTHER convention. Müller &
+    # Glatzel measure the same material at the same density (0.03 g/cm³) after
+    # saturation and free drainage and get 28.4 g water per g dry mass, which is
+    # 0.03 × 28.4 = 85 vol-%. Dried Sphagnum has a bimodal pore space; the large
+    # inter-fibre pores drain between "just drained" and -10 hPa, so the two
+    # readings differ by a factor of three for this material and by a few points
+    # for peat. The field is defined at -10 hPa, so 28 is the value that belongs
+    # in it. `water_retention: high` stays: REQ-019 fixes it for the type, and on
+    # a dry-mass basis this is the most water-retentive medium in either source
+    # (28.4 g/g against 6.4 g/g for peat) — which is what a grower handling wet
+    # moss experiences, and what REQ-019's quantitative WHC bands (low < 30 %)
+    # do not capture for a medium this light.
+    #
+    # Source: Kämäräinen, A., Simojoki, A., Lindén, L., Jokinen, K. & Silvan, N.
+    # (2018), "Physical growing media characteristics of Sphagnum biomass
+    # dominated by Sphagnum fuscum (Schimp.) Klinggr.", Mires and Peat 21(17),
+    # 1–16, doi:10.19189/MaP.2017.OMB.278, retrieved 2026-09-03 —
+    # https://www.mires-and-peat.net/article/128965-physical-growing-media-characteristics-of-_sphagnum_-biomass-dominated-by-_sphagnum-fuscum_-schimp-klinggr.pdf
+    # "The total porosity of Sphagnum moss ranged from 97.4 % to 97.8 % with no
+    #  significant differences."
+    # "[…] a severe reduction in its air capacity, i.e. in the difference between
+    #  the total pore volume and the volume of water-occupied pores at pF 1."
+    # "Our method differed from EN 13041 (the European standard; SFS-EN 13041)
+    #  procedures by using 72.1 mm diameter cylinders instead of the standard
+    #  100 mm ones"
+    # Figure 5: "Bulk densities (BD) and volumetric water retention of experimental
+    #  materials under differing matric potentials (pF1, pF2 and pF3)." — S. 40 mm:
+    #  BD ≈ 30 g/dm³, water ≈ 28 vol-% at pF 1, ≈ 19 at pF 2, ≈ 10 at pF 3.
+    # Cross-check from the same paper's printed regression for compacted moss
+    # (Figure 8, BD 40–80 g/dm³): "y=1.1321BD-2.096" gives 43 vol-% at 40 g/dm³ —
+    # denser than this record and wetter, as it should be.
+    air_porosity_percent: 70.0
     composition:
       sphagnum: 1.0
     buffer_capacity: low
     reusable: false
     max_reuse_cycles: 1
-    water_holding_capacity_percent: 80.0
-    easily_available_water_percent: 40.0
+    # Was 80.0 — see the note above `air_porosity_percent`.
+    water_holding_capacity_percent: 28.0
+    # Was 40.0, which is now impossible (a plant cannot extract more than the 28
+    # held). Same source, same sample: water between pF 1 and pF 2 ≈ 28 − 19 = 9
+    # vol-% (Figure 5). That is the 10–100 hPa band, which the paper's Figure 7
+    # labels "readily available" plus "easily available"; the strict de Boodt
+    # band (10–50 hPa) lies inside it and is not printed for this sample, so 9 is
+    # the widest reading of the field and a narrower one cannot be sourced here.
+    easily_available_water_percent: 9.0
     cec_meq_per_100cm3: 8.0
+    # UNCHANGED, and now corroborated twice: Kämäräinen's loosely packed 40 mm
+    # fibres sit at ≈30 g/dm³ (above), and Müller & Glatzel's processed biomass at
+    # "0.03 ± 0.0304" g/cm³. Gaudig et al. (2018) give 8.5–25 g/L for shredded and
+    # long-fibre material (recorded under #1332).
+    #
+    # Source: Müller, R. & Glatzel, S. (2021), "Sphagnum farming substrate is a
+    # competitive alternative to traditional horticultural substrates for
+    # achieving desired hydro-physical properties", Mires and Peat 27(21),
+    # doi:10.19189/MaP.2021.OMB.StA.2157, retrieved 2026-09-03 —
+    # https://www.mires-and-peat.net/article/128842.pdf
+    # Table 2 (IMC % / BD g/cm³ / MWC g/g dry mass / MWC % of dry mass):
+    # "Sphagnum   16.2 ± 1.1   0.03 ± 0.0304   28.4 ± 2.3***   2,842 ± 224"
+    # "Results of mean MWCs (amount of water held within the substrate after
+    #  total saturation and drainage) […]"
     bulk_density_g_per_l: 30.0
     irrigation_strategy: moderate
 

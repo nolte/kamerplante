@@ -44,7 +44,9 @@ Das System verwaltet Substrate als wiederverwendbare Definitionen mit konkreten 
       - `sphagnum`: Torfmoos für feuchtigkeitsliebende Epiphyten und Karnivoren — `water_retention: high`, pH 3.5–4.5, EC-sensitiv (< 0.5 mS/cm für Karnivoren)
       - Hinweis: Nährlösung ist kein Substrat und wird in REQ-014 (Tankmanagement) als Tank mit Typ `nutrient` verwaltet
     - `brand: Optional[str]`
-    - `ph_base: float`
+    - `ph_base: float` (pH im **Wasserextrakt**, pH-H₂O)
+
+      > **Konvention (festgelegt 2026-09-03, #1175):** `ph_base` ist der pH-Wert eines Wasserextrakts, nicht der CaCl₂-Wert. Das Extraktionsverhältnis legt der Katalog nicht fest (Plagron publiziert 1:1,5 v/v nach RHP, EN 13037 misst 1:5 v/v); es wird je Quelle im Seed-Datensatz notiert. Grund: jeder Konsument des Felds vergleicht es mit einer Messung in Wasser — die `ph_history` einer Charge (Messgerät im Drain oder in der Aufschlämmung), die volumengewichtete Mischung aus `calculate_mix_properties`, die MCP-Düngebeurteilung. Ein CaCl₂-Wert läge 0,5–1 Einheit darunter (LECHUZA-PON deklariert 8,2 H₂O gegen 7,1 CaCl₂) und würde als „saurer als dein Messgerät" gelesen. Ein Datensatz, dessen einzige Quelle CaCl₂ angibt, wird **nicht** umgerechnet — der Abstand ist substratabhängig — und bleibt offen.
     - `ec_base_ms: float` (Vorgedüngt oder inert)
     - `water_retention: Literal['low', 'medium', 'high']`
     - `water_holding_capacity_percent: Optional[float]` (volumetrische WHC, quantitativ: low <30%, medium 30–60%, high >60%)

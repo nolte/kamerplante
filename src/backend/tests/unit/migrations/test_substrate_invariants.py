@@ -88,22 +88,10 @@ _RULE_POROSITY = "porosity"
 _RULE_FERTILISER_EC = "fertiliser-ec"
 
 _KNOWN_OPEN: dict[str, tuple[str, str]] = {
-    "Sphagnum-Moos (getrocknet)": (
-        _RULE_POROSITY,
-        "air 25 + whc 80 = 105 %. Unlike rockwool, #1152 supplies no corrected air "
-        "figure, and dried sphagnum genuinely has both very high porosity and very "
-        "high water holding — which of the two numbers is wrong is not derivable. "
-        "Searched under #1175 without finding an authoritative pair: Gaudig et al. "
-        "(2018), 'Sphagnum Farming From Species Selection to the Production of "
-        "Growing Media: A Review', Mires and Peat 20(13), doi:10.19189/MaP.2018.OMB.340 "
-        "— full text; it publishes dry bulk densities (8.5-25 g/L shredded and "
-        "long-fibre, which corroborates this record's 30 g/L) but no air-capacity / "
-        "water-capacity pair at container capacity; two OpenAlex searches; the "
-        "Besgrow Spagmoss product pages, which claim high water holding without a "
-        "figure. The arithmetic does not identify the wrong half either: at 30 g/L "
-        "total pore space is about 98 % (organic particle density ~1.5 g/cm3), so "
-        "105 % overshoots by ~7 points and either number could carry the error.",
-    ),
+    # Empty since #1175 closed `Sphagnum-Moos (getrocknet)` with a citation (see the
+    # record). The shape stays: the next unsourced violation registers here, with
+    # its rule and the search that failed to source it, and leaves the moment it
+    # is fixed.
 }
 
 
@@ -158,6 +146,15 @@ def test_air_and_water_never_exceed_the_pore_space_they_share() -> None:
     sphagnum (25 + 80). The other 26 entries sat between 53 % and 85 %, which is
     what rules out a definitional quirk of the field and leaves "three wrong
     values".
+
+    **Sphagnum closed under #1175**, and the last register entry went with it —
+    which the healed-check below enforced: with the values corrected and the entry
+    still present the test failed with "must be removed from _KNOWN_OPEN". The pair
+    is measured at the record's own bulk density (Kämäräinen et al. 2018, Mires and
+    Peat 21(17): loosely packed 40 mm fibres at ≈30 g/dm³, ≈28 vol-% water at pF 1,
+    total porosity 97.4–97.8 %). The old 80 was the saturation-and-drain reading
+    (Müller & Glatzel 2021: 28.4 g/g at 0.03 g/cm³ = 85 vol-%), not the −10 hPa
+    reading the field is defined in; the citations live in the record.
     """
     offenders = {
         e.get("name_de"): f"{e.get('air_porosity_percent')} + {e.get('water_holding_capacity_percent')}"

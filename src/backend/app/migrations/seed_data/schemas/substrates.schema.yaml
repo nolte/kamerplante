@@ -55,7 +55,13 @@ $defs:
         minLength: 1
       ph_base:
         type: number
-        description: "Substrate pH. Bounded to the range a growing medium can physically occupy."
+        description: >-
+          Substrate pH in a WATER extract (pH-H₂O), never CaCl₂ (#1175). The
+          extraction ratio is not fixed here and is recorded per source in the seed
+          file (Plagron 1:1.5 v/v, EN 13037 1:5 v/v); the H₂O/CaCl₂ choice is,
+          because it moves a value by half a unit to a whole one and every consumer
+          compares this field against a grower's meter reading in water. Bounded to
+          the range a growing medium can physically occupy.
         minimum: 3.0
         maximum: 9.0
       ec_base_ms:
