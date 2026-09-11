@@ -8,7 +8,7 @@ from app.api.v1.admin.oidc_providers.schemas import (
     OidcProviderUpdateRequest,
 )
 from app.api.v1.auth.schemas import MessageResponse
-from app.common.auth import get_current_user
+from app.common.auth import require_platform_admin
 from app.common.dependencies import get_encryption_engine, get_oauth_engine, get_oidc_config_repo
 from app.common.exceptions import DuplicateError, NotFoundError
 from app.common.openapi_responses import CRUD_RESPONSES, UNAUTHORIZED_RESPONSE
@@ -18,6 +18,19 @@ from app.domain.engines.oauth_engine import OAuthEngine
 from app.domain.models.oidc_config import OidcProviderConfig
 from app.domain.models.user import User
 
+# Every operation here configures installation-wide identity federation and is
+# platform-admin only (#1399). Until then all six resolved their caller through
+# ``get_current_user``, so any authenticated member of any tenant could register a
+# provider pointing at a server they controlled — and the OAuth callback's
+# auto-link path matches an asserted email against an existing verified account,
+# which turns that into a login as that account. The sibling ``admin/platform``
+# router, mounted on the next line of ``api/v1/router.py``, gates every operation.
+#
+# The two reads are gated too: ``client_id`` and ``issuer_url`` are the
+# installation's federation topology, and #1385 made the same call for the HA URL.
+#
+# A new endpoint here inherits nothing automatically. ``tests/unit/api/test_write_route_gates.py``
+# sweeps the write surface; add read endpoints to that judgement by hand.
 router = APIRouter(
     prefix="/admin/oidc-providers",
     tags=["admin-oidc"],
@@ -45,7 +58,7 @@ def _response(c: OidcProviderConfig) -> OidcProviderResponse:
 
 @router.get("", response_model=list[OidcProviderResponse])
 def list_providers(
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     repo: ArangoOidcConfigRepository = Depends(get_oidc_config_repo),
 ):
     """List all configured OIDC/OAuth providers."""
@@ -55,7 +68,7 @@ def list_providers(
 @router.post("", response_model=OidcProviderResponse, status_code=201)
 def create_provider(
     body: OidcProviderCreateRequest,
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     repo: ArangoOidcConfigRepository = Depends(get_oidc_config_repo),
     encryption: EncryptionEngine = Depends(get_encryption_engine),
 ):
@@ -87,7 +100,7 @@ def create_provider(
 @router.get("/{key}", response_model=OidcProviderResponse)
 def get_provider(
     key: Annotated[str, Path(description="Document key of the OIDC provider configuration.")],
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     repo: ArangoOidcConfigRepository = Depends(get_oidc_config_repo),
 ):
     """Return a single OIDC/OAuth provider configuration by key."""
@@ -101,7 +114,7 @@ def get_provider(
 def update_provider(
     key: Annotated[str, Path(description="Document key of the OIDC provider configuration.")],
     body: OidcProviderUpdateRequest,
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     repo: ArangoOidcConfigRepository = Depends(get_oidc_config_repo),
     encryption: EncryptionEngine = Depends(get_encryption_engine),
 ):
@@ -124,7 +137,7 @@ def update_provider(
 @router.delete("/{key}", status_code=204)
 def delete_provider(
     key: Annotated[str, Path(description="Document key of the OIDC provider configuration.")],
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     repo: ArangoOidcConfigRepository = Depends(get_oidc_config_repo),
 ):
     """Delete an OIDC/OAuth provider configuration."""
@@ -137,7 +150,7 @@ def delete_provider(
 @router.post("/{key}/test", response_model=MessageResponse)
 def test_provider(
     key: Annotated[str, Path(description="Document key of the OIDC provider configuration.")],
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     repo: ArangoOidcConfigRepository = Depends(get_oidc_config_repo),
     oauth_engine: OAuthEngine = Depends(get_oauth_engine),
 ):

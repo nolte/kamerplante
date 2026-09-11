@@ -653,7 +653,7 @@ def request_run_diary_entry_analysis(
     key: Annotated[str, Path(description="Document key of the planting run.")],
     plant_key: Annotated[str, Path(description="Document key of the plant instance.")],
     entry_key: Annotated[str, Path(description="Document key of the diary entry.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("diary-entry", Action.CREATE)),
     service: PlantingRunService = Depends(get_planting_run_service),
     diary_service: PlantDiaryService = Depends(get_plant_diary_service),
 ):
@@ -685,7 +685,7 @@ def cancel_run_diary_entry_analysis(
     key: Annotated[str, Path(description="Document key of the planting run.")],
     plant_key: Annotated[str, Path(description="Document key of the plant instance.")],
     entry_key: Annotated[str, Path(description="Document key of the diary entry.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("diary-entry", Action.UPDATE)),
     service: PlantingRunService = Depends(get_planting_run_service),
     diary_service: PlantDiaryService = Depends(get_plant_diary_service),
 ):
