@@ -15,6 +15,11 @@ import type { SystemSettingsResponse } from '@/api/endpoints/adminSettings';
  */
 
 const AUTH_USER = {
+  // #1385 put the installation-wide HA and Pl@ntNet cards behind the
+  // platform-admin gate, on both sides. These suites drive exactly those
+  // cards, so their user is the caller who may reach them. The refusal for
+  // everyone else has its own test in AccountSettingsInstanceGating.test.tsx.
+  is_platform_admin: true,
   key: 'user-1',
   display_name: 'Tester',
   email: 'tester@example.org',
