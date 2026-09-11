@@ -35,8 +35,8 @@ class FakeSiteRepo:
 
     def __init__(self) -> None:
         self._sites = {
-            "site_own": Site(_key="site_own", tenant_key=OWN, name="Zuhause", site_type="indoor"),
-            "site_foreign": Site(_key="site_foreign", tenant_key=FOREIGN, name="Woanders", site_type="indoor"),
+            "site_own": Site(_key="site_own", tenant_key=OWN, name="Zuhause", type="indoor"),
+            "site_foreign": Site(_key="site_foreign", tenant_key=FOREIGN, name="Woanders", type="indoor"),
         }
         self._locations = {
             "loc_own": Location(_key="loc_own", name="Beet A", area_m2=1.0, site_key="site_own"),

@@ -245,7 +245,7 @@ class FakeSiteRepo:
 
     def get_site_by_key(self, key):
         tenant = "t1" if key == "site1" else "other-tenant"
-        return Site(_key=key, tenant_key=tenant, name=key, site_type="indoor")
+        return Site(_key=key, tenant_key=tenant, name=key, type="indoor")
 
     def get_location_by_key(self, key):  # pragma: no cover - unused by this service
         return None

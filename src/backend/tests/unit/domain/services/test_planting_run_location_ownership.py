@@ -45,8 +45,8 @@ class FakeSiteRepo:
 
     def __init__(self) -> None:
         self.sites = {
-            "site_own": Site(_key="site_own", tenant_key=OWN, name="Zuhause", site_type="indoor"),
-            "site_foreign": Site(_key="site_foreign", tenant_key=FOREIGN, name="Woanders", site_type="indoor"),
+            "site_own": Site(_key="site_own", tenant_key=OWN, name="Zuhause", type="indoor"),
+            "site_foreign": Site(_key="site_foreign", tenant_key=FOREIGN, name="Woanders", type="indoor"),
         }
         self.locations = {
             "loc_own": Location(_key="loc_own", name="Beet A", area_m2=1.0, site_key="site_own"),
@@ -128,7 +128,7 @@ def _service(site_repo: FakeSiteRepo, run_repo: FakeRunRepo) -> PlantingRunServi
     )
 
 
-def _run(location_key: str, tenant_key: str = OWN) -> PlantingRun:
+def _run(location_key: str | None, tenant_key: str = OWN) -> PlantingRun:
     return PlantingRun(
         tenant_key=tenant_key,
         name="Tomaten Frühjahr",
@@ -192,6 +192,59 @@ class TestCreateRun:
         """
         created = _service(site_repo, run_repo).create_run(_run("loc_foreign", tenant_key=""))
         assert created.key in run_repo.store
+
+
+class TestCloneConfig:
+    """`_apply_clone_config` writes `location_key` too, and it used to write it after the check.
+
+    The guard originally ran before the clone block. `_require_owned_location`
+    returns early for a run with no location, so a request with `location_key:
+    null` and a `clone_from_run_key` passed it trivially — and then the clone
+    copied `template.location_key` onto the run, unresolved.
+
+    That is reachable rather than theoretical: nothing verified
+    `PlantingRun.location_key` before #1372, which is the premise of this change,
+    so a run carrying a foreign key can exist. Cloning it launders the key into new
+    runs, past the guard this change adds.
+    """
+
+    def _template(self, site_repo, run_repo, location_key: str) -> str:
+        """A stored run pointing at `location_key`, written past the service.
+
+        Deliberately not through `create_run`: that is the path under test, and it
+        now refuses a foreign location. A row predating the guard is what this
+        models, so it is inserted the way the repository holds it.
+        """
+        created = run_repo.create(_run("loc_own"))
+        run_repo.store[created.key] = created.model_copy(update={"location_key": location_key})
+        return created.key
+
+    def test_a_clone_of_a_run_at_a_foreign_location_is_refused(self, site_repo, run_repo):
+        template_key = self._template(site_repo, run_repo, "loc_foreign")
+        clone = _run(None)
+        clone.clone_from_run_key = template_key
+
+        with pytest.raises(NotFoundError):
+            _service(site_repo, run_repo).create_run(clone)
+
+    def test_the_refused_clone_reaches_no_slot_of_the_foreign_location(self, site_repo, run_repo):
+        template_key = self._template(site_repo, run_repo, "loc_foreign")
+        clone = _run(None)
+        clone.clone_from_run_key = template_key
+
+        with pytest.raises(NotFoundError):
+            _service(site_repo, run_repo).create_run(clone)
+        assert site_repo.slot_reads == []
+        assert site_repo.slot_writes == []
+
+    def test_a_clone_of_a_run_at_the_tenants_own_location_is_created(self, site_repo, run_repo):
+        """The control: the guard must not refuse the ordinary clone."""
+        template_key = self._template(site_repo, run_repo, "loc_own")
+        clone = _run(None)
+        clone.clone_from_run_key = template_key
+
+        created = _service(site_repo, run_repo).create_run(clone)
+        assert created.location_key == "loc_own"
 
 
 class TestUpdateRun:

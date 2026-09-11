@@ -203,7 +203,7 @@ class TestForeignKeyOwnership:
                 return Location(_key=key, name="Foreign shed", area_m2=1.0, site_key="site_foreign")
 
             def get_site_by_key(self, key):
-                return Site(_key=key, tenant_key="other_tenant", name="Woanders", site_type="indoor")
+                return Site(_key=key, tenant_key="other_tenant", name="Woanders", type="indoor")
 
         service = OverwinteringProfileService(repo, site_repo=SiteRepoStub())
         profile = _profile(
@@ -250,7 +250,7 @@ class _ForeignSiteRepoStub:
         this stub is named for — and a stub that answers ``None`` would pass even
         against a guard that merely checks the site exists.
         """
-        return Site(_key=key, tenant_key="other_tenant", name="Woanders", site_type="indoor")
+        return Site(_key=key, tenant_key="other_tenant", name="Woanders", type="indoor")
 
 
 class TestCreateSiteFrostGuard:
@@ -607,7 +607,7 @@ class TestHardinessOverview:
                 return Location(_key=key, name="Balkon Süd", area_m2=1.0, site_key="site_own")
 
             def get_site_by_key(self, key):  # noqa: ANN001, ANN201
-                return Site(_key=key, tenant_key=TENANT, name="Zuhause", site_type="indoor")
+                return Site(_key=key, tenant_key=TENANT, name="Zuhause", type="indoor")
 
         self._seed_red_profile(repo, plant_key="p_red")
         service = OverwinteringProfileService(

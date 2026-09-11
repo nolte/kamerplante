@@ -101,7 +101,7 @@ def _serve_own_site(deps) -> None:
     would make the guard untestable from here.
     """
     deps.get_site_repo.return_value.get_site_by_key.side_effect = lambda key: (
-        Site(_key=key, tenant_key="tenant_1", name=key, site_type="indoor") if key == "site_1" else None
+        Site(_key=key, tenant_key="tenant_1", name=key, type="indoor") if key == "site_1" else None
     )
 
 

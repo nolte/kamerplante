@@ -98,9 +98,16 @@ class PlantingRunService:
 
     def create_run(self, run: PlantingRun, entries: list[PlantingRunEntry] | None = None) -> PlantingRun:
         run.status = PlantingRunStatus.PLANNED
-        self._require_owned_location(run)
         if run.clone_from_run_key:
             entries = self._apply_clone_config(run, entries)
+        # After the clone config, not before it. `_apply_clone_config` verifies the
+        # *template's* tenant and then copies `template.location_key` onto this run
+        # (`:138`) — and that stored key is not verified by anything, because rows
+        # written before #1372 were deliberately not migrated. Checking first left
+        # the clone path resolving a key nobody had looked at: clone a legacy run of
+        # your own tenant that points at a foreign location, and the new run
+        # inherits it. Here the check sees whichever key the run ends up with.
+        self._require_owned_location(run)
         total_qty = 0
         if entries:
             self._engine.validate_run_type_constraints(

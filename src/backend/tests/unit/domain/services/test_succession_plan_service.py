@@ -76,8 +76,6 @@ class _FakeRunService:
 
 
 class _FakeSiteRepo:
-    """Minimal site repo exposing only ``get_location_by_key`` (ownership guard)."""
-
     """A site repository that stores what the write path actually stores.
 
     ``Location`` rows are built with no ``tenant_key`` — the field exists on the
@@ -103,7 +101,7 @@ class _FakeSiteRepo:
                 _key=location.site_key,
                 tenant_key=_SITE_TENANTS[location.site_key],
                 name=location.site_key,
-                site_type="indoor",
+                type="indoor",
             )
 
     def get_location_by_key(self, key):

@@ -19,6 +19,7 @@ Two things are asserted here, and the second is the one that matters in a year:
 
 import ast
 import pathlib
+from collections.abc import Callable
 
 import pytest
 
@@ -47,8 +48,8 @@ class FakeSiteSource:
 
     def __init__(self) -> None:
         self.sites = {
-            "site_own": Site(_key="site_own", tenant_key=TENANT, name="Zuhause", site_type="indoor"),
-            "site_other": Site(_key="site_other", tenant_key=OTHER, name="Woanders", site_type="indoor"),
+            "site_own": Site(_key="site_own", tenant_key=TENANT, name="Zuhause", type="indoor"),
+            "site_other": Site(_key="site_other", tenant_key=OTHER, name="Woanders", type="indoor"),
         }
         self.locations = {
             "loc_own": Location(_key="loc_own", name="Beet A", area_m2=1.0, site_key="site_own"),
@@ -175,20 +176,61 @@ _ALLOWED: dict[str, str] = {
 }
 
 
+#: Names a local variable holding a ``Location`` or ``Slot`` plausibly goes by.
+#: A name list rather than a type inference: the latter is the right answer and a
+#: much larger one, and this list is checked by the two-direction falsification
+#: below rather than trusted.
+_LOCATION_LIKE = {"location", "loc", "slot"}
+
+
+#: What each exemption actually excuses, as a predicate. An entry is stale when its
+#: predicate stops holding — not when the word ``tenant_key`` stops appearing, which
+#: was the first version and could never fail: the allowlisted repository file
+#: contains that word a dozen times for ordinary tenant-scoped filters, so repairing
+#: the three projections the entry names would have left the guard green.
+_EXEMPTION_STILL_APPLIES: dict[str, Callable[[pathlib.Path], bool]] = {
+    "domain/models/site.py": lambda p: "tenant_key: str" in p.read_text(),
+    "data_access/arango/plant_instance_repository.py": (
+        lambda p: "location.tenant_key == @tenant_key" in p.read_text()
+    ),
+}
+
+
 def _ownership_reads(path: pathlib.Path) -> list[str]:
-    """Attribute reads of ``.tenant_key`` on a name that looks like a location or slot.
+    """Reads of ``tenant_key`` on a name that looks like a location or slot.
 
     An AST walk rather than a grep: a grep matches the pattern inside a comment
     explaining that the pattern is wrong, and this repository has three such
     comments — one sweep already reported a fixed defect as open that way.
+
+    **Two forms, because the first version of this only caught one.** It matched
+    `ast.Attribute` and therefore missed `getattr(location, "tenant_key", "")`,
+    which is what two live sites actually used — one fail-open
+    (`nutrient_plan_service`, where ``"" in ("", tenant_key)`` made the guard
+    unfireable) and one over-rejecting (`fertilizer_service`). Both were invisible
+    to the sweep while its failure message claimed no module reads the field. The
+    class is eleven sites, not the nine the first pass found.
     """
     tree = ast.parse(path.read_text())
     hits = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Attribute) or node.attr != "tenant_key":
+        # `location.tenant_key`
+        if isinstance(node, ast.Attribute) and node.attr == "tenant_key":
+            target = node.value
+            if isinstance(target, ast.Name) and target.id in _LOCATION_LIKE:
+                hits.append(f"{path.name}:{node.lineno} {ast.unparse(node)}")
             continue
-        target = node.value
-        if isinstance(target, ast.Name) and target.id in {"location", "loc", "slot"}:
+        # `getattr(location, "tenant_key", …)` — the form the first pass missed.
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in _LOCATION_LIKE
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value == "tenant_key"
+        ):
             hits.append(f"{path.name}:{node.lineno} {ast.unparse(node)}")
     return hits
 
@@ -223,6 +265,6 @@ def test_every_allowlisted_file_still_contains_what_it_excuses(relative: str):
     """
     path = _APP_ROOT / relative
     assert path.exists(), f"{relative} is allowlisted but does not exist: {_ALLOWED[relative]}"
-    assert "tenant_key" in path.read_text(), (
-        f"{relative} no longer reads tenant_key; drop its allowlist entry ({_ALLOWED[relative]})"
+    assert _EXEMPTION_STILL_APPLIES[relative](path), (
+        f"{relative} no longer contains what its entry excuses; drop it ({_ALLOWED[relative]})"
     )
