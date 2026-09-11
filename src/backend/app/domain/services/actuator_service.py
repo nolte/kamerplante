@@ -41,6 +41,7 @@ from app.domain.engines.actuator_control_engine import (
     clamp_to_bounds,
     derive_actuator_command,
 )
+from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.models.actuator import (
     Actuator,
     ControlEvent,
@@ -50,6 +51,7 @@ from app.domain.models.actuator import (
     PhaseControlProfile,
 )
 from app.domain.models.task import Task
+from app.domain.services.location_ownership import require_owned_site
 
 logger = structlog.get_logger(__name__)
 
@@ -64,8 +66,15 @@ class ActuatorService:
         task_repo: Any | None = None,
         engine: ControlEngine | None = None,
         mapper: HomeAssistantCommandMapper | None = None,
+        site_repo: ISiteRepository | None = None,
     ) -> None:
         self._repo = repo
+        # A location's tenant lives on its parent site, and the actuator
+        # repository reads locations but not sites (#1397). Optional so the
+        # service stays constructible in pure-domain contexts; when it is absent
+        # the ownership check says so rather than quietly passing — see
+        # :meth:`_verify_location`.
+        self._site_repo = site_repo
         self._ha_client_factory = ha_client_factory
         self._task_repo = task_repo
         self._engine = engine or ControlEngine()
@@ -110,10 +119,23 @@ class ActuatorService:
         self._repo.delete_actuator(key)
 
     def _verify_location(self, location_key: str, tenant_key: str) -> None:
+        """Require ``location_key`` to belong to ``tenant_key``.
+
+        Anchored on the parent site (#1397). Written as
+        ``verify_tenant_ownership(location, …)`` this compared against
+        ``Location.tenant_key``, which the write path never fills — so it refused
+        **every** location, the caller's own included.
+
+        With no site repository wired there is nothing to anchor against, and the
+        check refuses rather than passes: an actuator is a device that acts on the
+        physical world, so "cannot tell" is not a reason to proceed.
+        """
         location = self._repo.get_location(location_key)
         if location is None:
             raise NotFoundError("Location", location_key)
-        verify_tenant_ownership(location, tenant_key, "Location")
+        if self._site_repo is None:
+            raise NotFoundError("Location", location_key)
+        require_owned_site(self._site_repo, location.site_key, tenant_key, "Location", location_key)
 
     # ── Command dispatch & graceful degradation ──────────────────────────
 

@@ -151,6 +151,9 @@ def get_actuator_service():
         get_actuator_repo(),
         ha_client_factory=get_ha_client,
         task_repo=get_task_repo(),
+        # #1397: a location's tenant is its site's tenant, and the actuator
+        # repository cannot reach sites.
+        site_repo=get_site_repo(),
     )
 
 

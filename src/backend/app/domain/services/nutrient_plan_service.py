@@ -15,6 +15,7 @@ from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.models.fertilizer import DEFAULT_MIXING_PRIORITY, Fertilizer
 from app.domain.models.nutrient_plan import DeliveryChannel, NutrientPlan, NutrientPlanPhaseEntry
 from app.domain.models.site import RoWaterProfile
+from app.domain.services.location_ownership import resolve_owned_location
 
 
 class NutrientPlanService:
@@ -517,9 +518,19 @@ class NutrientPlanService:
         # engine only receives the numeric area.
         area_m2: float | None = None
         if location_key:
-            location = self._site_repo.get_location_or_raise(location_key)
-            if tenant_key and getattr(location, "tenant_key", "") not in ("", tenant_key):
-                raise NotFoundError("Location", location_key)
+            # Anchored on the parent site (#1397). Written as
+            # ``getattr(location, "tenant_key", "") not in ("", tenant_key)`` this
+            # could never fire: the field is empty on every row the write path
+            # produces, and ``"" in ("", tenant_key)`` is always true. The ``""``
+            # arm is the hybrid-catalogue idiom (empty means global) applied to a
+            # field that is empty for a different reason — there are no global beds.
+            # Fail-open, and it leaked ``area_m2`` of any location to any tenant
+            # plus a three-way existence oracle (404 / 422 / 200) over foreign keys.
+            location = (
+                resolve_owned_location(self._site_repo, location_key, tenant_key)
+                if tenant_key
+                else self._site_repo.get_location_or_raise(location_key)
+            )
             if location.area_m2 <= 0:
                 raise ValidationError("Location has no area (area_m2) configured for area-based dosing.")
             area_m2 = location.area_m2
