@@ -199,7 +199,36 @@ class TestTheWalk:
     def test_both_scopes_are_actually_populated(self):
         """Either selector matching nothing would make its assertion vacuous."""
         assert len(_tenant_write_operations()) > 200
-        assert len(_admin_write_operations()) > 10
+        assert len(_admin_write_operations()) > 30
+
+    def test_the_sweep_runs_against_the_full_route_surface(self):
+        """In light mode half the admin surface is not mounted, and the sweep goes quiet.
+
+        `api/v1/router.py` mounts `auth`, `privacy`, `admin/platform` and
+        `admin/oidc-providers` only when `kamerplanter_mode == "full"`. Measured:
+        38 admin write operations under `full`, **19** under `light`. The sweep
+        passes in both — so under `light` it certifies half the surface while
+        reading exactly the same.
+
+        That is not hypothetical. `/admin/oidc-providers` (#1399) is one of the
+        routers that disappears, and it is the finding this sweep is credited with.
+        Run under `light`, it would have reported nothing and looked identical.
+
+        So the mode is asserted rather than assumed, and this **fails** rather than
+        skipping: a skip is indistinguishable from a pass in a CI summary, which is
+        the property that let the original 37 accumulate. The floor above is raised
+        to 30 for the same reason — it is now a number only `full` can satisfy, so
+        deleting this test does not silently restore the hole.
+        """
+        from app.config.settings import settings
+
+        assert settings.kamerplanter_mode == "full", (
+            f"This sweep only covers the full route surface; it is running under "
+            f"`{settings.kamerplanter_mode}`, where the auth, privacy, platform-admin "
+            f"and OIDC-provider routers are not mounted at all. Run it with "
+            f"KAMERPLANTER_MODE=full, or extend it with a light-mode expectation of "
+            f"its own — but do not let it report green over half the surface."
+        )
 
 
 class TestTenantWriteGates:

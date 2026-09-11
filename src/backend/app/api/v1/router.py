@@ -93,18 +93,22 @@ api_router.include_router(admin_settings_router)
 # registered once for both light and full mode.
 api_router.include_router(weather_providers_admin_router)
 # Recognition admin, available in both light and full mode (the inference feature
-# itself is optional). This comment used to read "read-only + get_current_user-gated,
-# like admin settings"; both halves stopped being true. Admin settings is
-# platform-admin-gated since #1385, and this router is not read-only — POST
-# /admin/recognition/acquire dispatches an installation-wide acquisition run over
-# every species, on `get_current_user` alone, while the `pests_admin_router`
-# mounted three lines below gates its identical /acquire on require_platform_admin.
-# Tracked with the rest of the write-route sweep in #1353.
+# itself is optional). Platform-admin-gated on both its operations since #1401,
+# matching the pests router mounted below.
+#
+# Two earlier versions of this comment were wrong, in opposite directions, and the
+# pair is worth keeping visible: it first said "read-only + get_current_user-gated,
+# like admin settings" (both halves went false when #1385 gated admin settings and
+# when anyone read /acquire), and the correction then described /acquire as still
+# carrying get_current_user alone — which #1401 fixed two commits later, in this
+# same branch. A comment that states a measured gate goes stale the moment the gate
+# moves; this one now names the issue that set it, so the next reader can check.
 api_router.include_router(recognition_admin_router)
 # REQ-044 pest few-shot index admin (coverage, gallery, acquisition).
-# Platform-admin-gated, available in light + full mode. Not "like recognition
-# admin", which this used to say: that router's /acquire carries only
-# get_current_user (see above) — this one is the correct side of the pair.
+# Platform-admin-gated, available in light + full mode — the same gate the
+# recognition router above now carries. This comment briefly read "not like
+# recognition admin", which was true for exactly the two commits between #1385 and
+# #1401.
 api_router.include_router(pests_admin_router)
 # Reference-image acquisition + manual curation (REQ-029-A) belongs to the same
 # optional inference feature and is available in both modes. Its endpoints are

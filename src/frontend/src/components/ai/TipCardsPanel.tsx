@@ -11,6 +11,7 @@ import Skeleton from '@mui/material/Skeleton';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import AIResponse from './AIResponse';
 import { useExpertiseLevel } from '@/hooks/useExpertiseLevel';
+import { useTenantPermissions } from '@/hooks/useTenantPermissions';
 import { aiApi } from '@/api';
 import type { AiTipCard } from '@/api/types';
 
@@ -49,8 +50,13 @@ export default function TipCardsPanel({ contextType, contextKey, title }: TipCar
           : await aiApi.getTips(contextType, contextKey, language);
         setTips(result);
       } catch {
-        // Online-only feature (UI-NFR-012): hide the panel on failure.
-        setTips([]);
+        // Online-only feature (UI-NFR-012): hide the panel when it has nothing to
+        // show. A *forced* refresh that fails is different — the panel already
+        // holds tips the reader may see, and clearing them turns a failed
+        // regeneration into the loss of the read surface too. #1353 made that
+        // reachable: `POST /ai/tips/refresh` answers 403 to a viewer, and before
+        // this the whole panel vanished on the click.
+        if (!force) setTips([]);
       } finally {
         setLoading(false);
       }
@@ -61,6 +67,11 @@ export default function TipCardsPanel({ contextType, contextKey, title }: TipCar
   useEffect(() => {
     void load(false);
   }, [load]);
+
+  // Regenerating tips is a write on the server (`require_tenant_role(grower)`
+  // since #1353); `canEdit` is the same predicate, so the control is absent for a
+  // viewer rather than present and refused.
+  const { canEdit } = useTenantPermissions();
 
   const maxCards = level === 'beginner' ? 2 : 4;
   const visibleTips = (tips ?? []).slice(0, maxCards);
@@ -87,6 +98,7 @@ export default function TipCardsPanel({ contextType, contextKey, title }: TipCar
         <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
           {title ?? t('ai.tips.heading')}
         </Typography>
+        {canEdit && (
         <Button
           size="small"
           startIcon={<RefreshIcon />}
@@ -97,6 +109,7 @@ export default function TipCardsPanel({ contextType, contextKey, title }: TipCar
         >
           {t('ai.tips.refresh')}
         </Button>
+        )}
       </Stack>
 
       <Stack spacing={1.5}>
