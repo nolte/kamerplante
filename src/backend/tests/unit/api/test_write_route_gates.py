@@ -119,21 +119,23 @@ _TENANT_ALLOWLIST: dict[str, str] = {
     "favorites.tenant_router.add_favorite": "per-user favourite",
     "favorites.tenant_router.remove_favorite": "per-user favourite",
     "notifications.tenant_router.mark_read": "per-user notification state",
-    "notifications.tenant_router.mark_acted": "per-user notification state",
+    "notifications.tenant_router.mark_acted": (
+        "per-user notification state — and, for a care.* notification with a confirm "
+        "action, a CareConfirmation and a WateringLog. That branch is gated inline on "
+        "the domain role, because the notification is addressed to this user while the "
+        "write it triggers is the one require_permission('watering-log', CREATE) gates "
+        "on the direct route"
+    ),
     "notifications.tenant_router.update_preferences": "per-user notification preferences",
     "notifications.tenant_router.subscribe_pwa": "per-user push subscription",
     "notifications.tenant_router.unsubscribe_pwa": "per-user push subscription",
     "notifications.tenant_router.send_test_notification": (
         "sends to the caller's own configured channel with a fixed body, rate-limited per client address"
     ),
-    "onboarding.tenant_router.complete_onboarding": "per-user onboarding progress",
     "onboarding.tenant_router.skip_onboarding": "per-user onboarding progress",
     "onboarding.tenant_router.reset_onboarding": "per-user onboarding progress",
     "onboarding.tenant_router.update_onboarding_progress": "per-user onboarding progress",
     "user_preferences.tenant_router.update_preferences": "per-user preferences",
-    "ki_assistent.tenant_router.dismiss_tip": "per-user tip state, generates nothing",
-    "ki_assistent.tenant_router.acted_on_tip": "per-user tip state, generates nothing",
-    "ki_assistent.tenant_router.dismiss_daily_tip": "per-user tip state, generates nothing",
     "ki_assistent.tenant_router.create_conversation": (
         "creates an empty per-user conversation record and calls no provider; send_message, which does, is gated"
     ),

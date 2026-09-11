@@ -126,7 +126,7 @@ def refresh_tips(
 @router.post("/tips/{tip_key}/dismiss", status_code=204)
 def dismiss_tip(
     tip_key: Annotated[str, Path(description="Document key of the tip card.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     service: AiAssistantService = Depends(get_ai_assistant_service),
 ) -> None:
     """Dismiss a tip card so it is no longer shown."""
@@ -136,7 +136,7 @@ def dismiss_tip(
 @router.post("/tips/{tip_key}/acted-on", status_code=204)
 def acted_on_tip(
     tip_key: Annotated[str, Path(description="Document key of the tip card.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     service: AiAssistantService = Depends(get_ai_assistant_service),
 ) -> None:
     """Mark a tip card as acted on."""
@@ -160,7 +160,7 @@ def get_daily_tip(
 
 @router.post("/daily-tip/dismiss", status_code=204)
 def dismiss_daily_tip(
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     service: AiAssistantService = Depends(get_ai_assistant_service),
 ) -> None:
     """Dismiss today's personalised daily tip."""
