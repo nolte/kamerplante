@@ -113,7 +113,7 @@ def get_location_stats(
 @router.post("/watering-events/confirm", response_model=WateringConfirmResponse, status_code=201)
 def confirm_watering(
     body: WateringConfirmRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("watering-event", Action.CREATE)),
     service: WateringService = Depends(get_watering_service),
 ):
     """Confirm a scheduled watering task, creating the resulting event."""
@@ -132,7 +132,7 @@ def confirm_watering(
 @router.post("/watering-events/quick-confirm", response_model=WateringConfirmResponse, status_code=201)
 def quick_confirm_watering(
     body: WateringQuickConfirmRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("watering-event", Action.CREATE)),
     service: WateringService = Depends(get_watering_service),
 ):
     """Quick-confirm a scheduled watering task with default values."""

@@ -42,6 +42,7 @@ from app.domain.models.overwintering_profile import (
 from app.domain.models.overwintering_profile_template import OverwinteringProfileTemplate
 from app.domain.models.plant_instance import PlantInstance
 from app.domain.models.site import Location
+from app.domain.services.location_ownership import find_owned_location, resolve_owned_location
 
 _ENTITY = "OverwinteringProfile"
 
@@ -769,8 +770,12 @@ class OverwinteringProfileService:
                 labels["species_common_name"] = species.common_names[0] if species.common_names else None
 
         if location_key and self._site_repo is not None:
-            location = self._site_repo.get_location_by_key(location_key)
-            if location is not None and location.tenant_key == tenant_key:
+            # Anchored on the parent site (#1397). Written as
+            # ``location.tenant_key == tenant_key`` this was never true, so the
+            # label was never set — an inert condition rather than a wrong one,
+            # which is why no test caught it.
+            location = find_owned_location(self._site_repo, location_key, tenant_key)
+            if location is not None:
                 labels["location_name"] = location.name
 
         return labels
@@ -886,9 +891,11 @@ class OverwinteringProfileService:
     def _verify_winter_quarter_ownership(self, profile: OverwinteringProfile, tenant_key: str) -> None:
         """Reject a winter quarter (location) owned by another tenant (B5)."""
         if profile.winter_quarter_key and self._site_repo is not None:
-            location = self._site_repo.get_location_by_key(profile.winter_quarter_key)
-            if location is None or location.tenant_key != tenant_key:
-                raise NotFoundError("Location", profile.winter_quarter_key)
+            # Anchored on the parent site (#1397), which is what the docstring at
+            # the head of this class already said and this line did not: compared
+            # against ``location.tenant_key`` it refused every winter quarter,
+            # the tenant's own included.
+            resolve_owned_location(self._site_repo, profile.winter_quarter_key, tenant_key)
 
     def _wire_edges_or_rollback(self, profile: OverwinteringProfile) -> None:
         """Wire the subject / winter-quarter edges, rolling back on failure (B4).

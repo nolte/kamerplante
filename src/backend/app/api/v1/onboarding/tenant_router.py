@@ -14,8 +14,9 @@ from app.api.v1.onboarding.schemas import (
     OnboardingProgressUpdate,
     OnboardingStateResponse,
 )
-from app.common.auth import get_current_tenant
+from app.common.auth import get_current_tenant, require_permission
 from app.common.dependencies import get_onboarding_service
+from app.core.permissions import Action, ResourceType
 from app.domain.models.onboarding import PlantConfig
 from app.domain.models.tenant_context import TenantContext
 from app.domain.services.onboarding_service import OnboardingService
@@ -36,7 +37,7 @@ def get_onboarding_state(
 @router.post("/complete", response_model=OnboardingCompleteResponse)
 def complete_onboarding(
     body: OnboardingCompleteRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission(ResourceType.PLANT, Action.CREATE)),
     service: OnboardingService = Depends(get_onboarding_service),
 ) -> OnboardingCompleteResponse:
     """Finish the onboarding wizard and provision the selected starter entities."""

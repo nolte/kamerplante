@@ -104,6 +104,19 @@ export const ROLE_GUARDED_ROUTES: Readonly<Record<string, RoleGuardedRoute>> = {
  * parametrised test and the static check all follow automatically.
  */
 export const ACTION_GATED_ROUTES: readonly string[] = [
+  // #1353 moved these three out of UNGATED_ROUTES. Their reason there was "pages
+  // that call nothing", and that was true only because the operations they call
+  // were themselves ungated: `POST /diagnosis/analyze`, the three KI-Assistent
+  // generation calls and the diary analysis request all resolved `ctx` through
+  // bare `get_current_tenant`. Gating them turned the reason false, so the entry
+  // moved with the gate rather than being left to rot.
+  //
+  // ACTION_GATED rather than ROLE_GUARDED: all three stay readable for a viewer
+  // — the diagnosis form, the tip list, the diary — and only the write
+  // affordance is refused.
+  'ki-assistent',
+  'diagnose',
+  'tagebuch',
   'settings',
   'tenants/settings',
   'ueberwinterung/profile',
@@ -199,11 +212,8 @@ export const UNGATED_ROUTES: readonly string[] = [
   'standorte/substrates/:key',
   'standorte/substrates/batches/:key',
   'pflanzen/calculations',
-  'ki-assistent',
   'glossar',
-  'diagnose',
   'duengung/calculations',
-  'tagebuch',
   'pflanzenschutz/diseases',
   'pflanzenschutz/treatments',
   'pflanzenschutz/treatments/:key',
@@ -246,15 +256,18 @@ export interface PlatformAdminRoute {
  *   these pages make is `require_platform_admin`, including the two `GET`s they
  *   load with. A refused member has nothing to read here at all.
  * - `settings` — the account page **every member owns**. Its *platform* tab is
- *   the admin surface (the *ha* tab is **not**, measured: `PUT`/`POST`/`DELETE`
- *   `/admin/settings/home-assistant` and `/plant-identification` are gated on
- *   `get_current_user` alone, which is #1385, not a platform-admin gate this
- *   could mirror). It cannot be route-guarded on this axis
+ *   the admin surface, and since #1385 so is the instance-wide half of the *ha*
+ *   tab: every `/admin/settings` operation now resolves through
+ *   `require_platform_admin`, and the HA-connection and Pl@ntNet cards are built
+ *   only when `canManageInstanceSettings`. (This paragraph used to argue the
+ *   opposite — that those routes were gated on `get_current_user` alone and so
+ *   offered no platform-admin gate to mirror. That was the defect #1385 fixed,
+ *   and the reason went with it.) The route still cannot be guarded on this axis
  *   without taking every member's own account settings away, so it keeps its
  *   domain-axis decision in {@link ACTION_GATED_ROUTES}. Measuring it did
  *   contradict the assumption this entry started from: the `platform` tab is
  *   offered to everyone (unlike the `storage`/`weather` tabs, which are built
- *   only when `canManageStorage`), and `AccountSettingsPage` derives its own
+ *   only when `canManageInstanceSettings`), and `AccountSettingsPage` derives its own
  *   `isPlatformAdmin` by *probing* the three `/admin/platform` endpoints and
  *   catching the 403 — so a non-admin who opens `/settings#platform` still gets
  *   the tab, with empty cards behind it. That is the same defect on the same axis at the tab

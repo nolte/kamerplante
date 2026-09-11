@@ -7,7 +7,7 @@ import pytest
 from app.common.enums import SuccessionPlanStatus
 from app.common.exceptions import NotFoundError, ValidationError
 from app.domain.models.planting_run import PlantingRun
-from app.domain.models.site import Location
+from app.domain.models.site import Location, Site
 from app.domain.models.succession_plan import SuccessionPlan
 from app.domain.services.succession_plan_service import SuccessionPlanService
 
@@ -76,17 +76,57 @@ class _FakeRunService:
 
 
 class _FakeSiteRepo:
-    """Minimal site repo exposing only ``get_location_by_key`` (ownership guard)."""
+    """A site repository that stores what the write path actually stores.
+
+    ``Location`` rows are built with no ``tenant_key`` — the field exists on the
+    model and the application never fills it (#1397), because ``LocationCreate``
+    may not carry one (#1000) and ``create_location`` does
+    ``Location(**body.model_dump())``. A double that invents the value makes a
+    positive test certify nothing: the real repository would hand the service a
+    location whose ``tenant_key`` is ``""``, and only the double's version passes
+    an ownership check written against that field.
+
+    The tenant lives on the parent ``Site``, so this double serves sites too.
+    """
 
     def __init__(self, locations: dict[str, Location] | None = None) -> None:
         self._locations = locations or {}
+        self._sites: dict[str, Site] = {}
+        for location in self._locations.values():
+            self._register_site(location)
+
+    def _register_site(self, location: Location) -> None:
+        if location.site_key and location.site_key not in self._sites:
+            self._sites[location.site_key] = Site(
+                _key=location.site_key,
+                tenant_key=_SITE_TENANTS[location.site_key],
+                name=location.site_key,
+                type="indoor",
+            )
 
     def get_location_by_key(self, key):
         return self._locations.get(key)
 
+    def get_site_by_key(self, key):
+        return self._sites.get(key)
+
+
+#: Which tenant each fixture site belongs to. Held beside the factory rather than
+#: on the ``Location`` so the double cannot drift back into carrying the tenant on
+#: the row itself.
+_SITE_TENANTS: dict[str, str] = {}
+
 
 def _location(key: str, tenant_key: str) -> Location:
-    return Location(_key=key, tenant_key=tenant_key, name=key, area_m2=1.0)
+    """A location as the write path stores one: no ``tenant_key``, a parent site.
+
+    ``tenant_key`` stays in the signature because that is what the caller means —
+    it is recorded on the site this location hangs under, which is where the
+    application reads it from.
+    """
+    site_key = f"site_{tenant_key}"
+    _SITE_TENANTS[site_key] = tenant_key
+    return Location(_key=key, name=key, area_m2=1.0, site_key=site_key)
 
 
 def _plan(**overrides) -> SuccessionPlan:

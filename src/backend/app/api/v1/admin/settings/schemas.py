@@ -122,9 +122,12 @@ class StorageTestResponse(BaseModel):
 
 class SystemSettingsResponse(BaseModel):
     # NOTE (SEC-001): the storage-infra block is deliberately NOT embedded here.
-    # ``GET /admin/settings`` is available to any authenticated user, so exposing
-    # endpoint/region/bucket/KMS would be infrastructure disclosure. Storage
-    # config is served by the platform-admin-only ``GET /admin/settings/storage``.
+    # When this note was written, ``GET /admin/settings`` was reachable by any
+    # authenticated user, and embedding endpoint/region/bucket/KMS would have been
+    # infrastructure disclosure. Since #1385 both reads are platform-admin only,
+    # and the separation is kept anyway: the two payloads have different audiences
+    # on the client (the account-settings page reads this one), and collapsing
+    # them is how a field ends up served to the wider audience by accident.
     home_assistant: HASettingsResponse
     plant_identification: PlantIdentificationSettingsResponse
 

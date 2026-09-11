@@ -5,8 +5,9 @@ All endpoints are mounted under /api/v1/t/{tenant_slug}/notifications/.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 
+from app.api.v1.auth.router import limiter
 from app.api.v1.notifications.schemas import (
     ChannelStatusResponse,
     NotificationListResponse,
@@ -267,14 +268,27 @@ async def channel_status(
 
 
 @router.post("/test", response_model=TestNotificationResponse)
+@limiter.limit(settings.rate_limit_notification_test)
 async def send_test_notification(
+    request: Request,
     body: TestNotificationRequest,
     ctx: TenantContext = Depends(get_current_tenant),
     service: NotificationService = Depends(get_notification_service),
 ) -> TestNotificationResponse:
-    """Send a test notification through a specific channel.
+    """Send a test notification through the caller's own configured channel.
 
-    Rate limited to 5 requests per hour per user.
+    Rate limited per client address (``settings.rate_limit_notification_test``).
+    The previous version of this docstring promised "5 requests per hour per
+    user" and no limiter existed in this module at all — an unbacked claim found
+    by the #1353 write-route sweep, and the reason the route is allowlisted there
+    rather than gated: the notification goes to the caller's own channel with a
+    fixed body, so a domain role is the wrong axis, but the volume still needs a
+    bound.
+
+    ``request`` is unused by the body and required by the decorator: slowapi
+    inspects the signature and raises ``No "request" or "websocket" argument`` at
+    decoration time, so deleting it as dead breaks the import rather than quietly
+    disarming the limit.
     """
     result = await service.send_test(
         user_key=ctx.user_key,

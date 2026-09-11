@@ -13,10 +13,10 @@ from fastapi.testclient import TestClient
 
 from app.common.auth import get_current_tenant
 from app.common.dependencies import get_fertilizer_service
-from app.common.enums import FertilizerType, TenantRole
+from app.common.enums import FertilizerType, SiteType, TenantRole
 from app.common.exceptions import NotFoundError
 from app.domain.models.fertilizer import Fertilizer
-from app.domain.models.site import Location
+from app.domain.models.site import Location, Site
 from app.domain.models.tenant_context import TenantContext
 from app.domain.services.fertilizer_service import FertilizerService
 
@@ -36,11 +36,32 @@ class _FakeFertRepo:
 
 
 class _FakeSiteRepo:
+    """A site repository that stores what the write path stores.
+
+    `Location` rows carry **no** `tenant_key` — `LocationCreate` may not declare
+    one (#1000) and `create_location` does `Location(**body.model_dump())`. The
+    tenant lives on the parent site, so this double serves sites too (#1397).
+
+    It used to invent the field, and that is why nobody noticed that
+    `FertilizerService`'s guard refused every location including the caller's own:
+    the positive test passed on a row the application cannot produce, and the
+    negative test would have passed against a guard that refused everything.
+    """
+
+    #: Which tenant each fixture site belongs to.
+    _SITE_TENANTS = {"site-1": "personal", "site-2": "other"}
+
     def __init__(self, locations: dict[str, Location]) -> None:
         self._locations = locations
 
     def get_location_by_key(self, key: str) -> Location | None:
         return self._locations.get(key)
+
+    def get_site_by_key(self, key: str) -> Site | None:
+        tenant = self._SITE_TENANTS.get(key)
+        if tenant is None:
+            return None
+        return Site(_key=key, tenant_key=tenant, name=key, type=SiteType.OUTDOOR)
 
     def get_location_or_raise(self, key: str) -> Location:
         location = self._locations.get(key)
@@ -69,10 +90,11 @@ def _fertilizers() -> dict[str, Fertilizer]:
 
 def _locations() -> dict[str, Location]:
     return {
-        "loc-1": Location(_key="loc-1", name="Bed 1", site_key="site-1", area_m2=2.5, tenant_key="personal"),
-        "loc-empty": Location(_key="loc-empty", name="Bed 0", site_key="site-1", area_m2=0.0, tenant_key="personal"),
-        # Belongs to a different tenant — must never resolve for tenant "personal".
-        "loc-other": Location(_key="loc-other", name="Bed X", site_key="site-2", area_m2=5.0, tenant_key="other"),
+        "loc-1": Location(_key="loc-1", name="Bed 1", site_key="site-1", area_m2=2.5),
+        "loc-empty": Location(_key="loc-empty", name="Bed 0", site_key="site-1", area_m2=0.0),
+        # Under site-2, which belongs to another tenant — "foreign" expressed the way
+        # the data expresses it, not as an invented field on the row itself.
+        "loc-other": Location(_key="loc-other", name="Bed X", site_key="site-2", area_m2=5.0),
     }
 
 

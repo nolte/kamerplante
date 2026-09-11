@@ -507,6 +507,26 @@ class Settings(BaseSettings):
     #: account's address is a rare, deliberate act; a handful of attempts an hour
     #: covers a typo plus a change of mind.
     rate_limit_email_change: str = "5/hour"
+    #: ``POST /api/v1/t/{slug}/notifications/test`` (REQ-030), per client address.
+    #:
+    #: **Why there is a limit at all.** The route's docstring claimed "Rate limited
+    #: to 5 requests per hour per user" while no limiter existed anywhere in the
+    #: module — found by the #1353 write-route sweep. Every call sends a real
+    #: notification out through a configured channel (mail, push, Home Assistant),
+    #: so an unbounded one is outbound volume and provider cost that any member can
+    #: spend in a loop.
+    #:
+    #: **Per address, not per user, and the docstring now says so.** The shared
+    #: ``limiter`` keys on ``resolve_client_ip`` (#1130), and a per-user bucket
+    #: would need the key function to see the authenticated principal, which it
+    #: does not. Bounding the burst from one source is the control that is actually
+    #: implementable here; claiming the other one is how this started.
+    #:
+    #: **Why an hour.** The blast radius is the caller's *own* channel with a fixed
+    #: body, so this is not a spam vector against third parties — it is cost and
+    #: noise. Testing a channel is a rare, deliberate act: a handful of attempts an
+    #: hour covers a misconfigured endpoint plus a retry after fixing it.
+    rate_limit_notification_test: str = "5/hour"
     #: ``POST /api/v1/privacy/email-change/confirm`` (REQ-025 Art. 16), per client IP.
     #:
     #: **Why there is a limit at all** (#990). The endpoint is unauthenticated and

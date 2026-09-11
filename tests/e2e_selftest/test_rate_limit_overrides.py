@@ -52,6 +52,16 @@ _LEFT_AT_PRODUCTION: dict[str, str] = {
         "A couple of change requests per run; the flow is not on any journey path."
     ),
     "rate_limit_email_change_confirm": ("Same volume as the request half it follows."),
+    "rate_limit_notification_test": (
+        "Reachable only by an explicit click on the notification-settings tab — one "
+        "deliberate send per channel a user is configuring. It is not on any bootstrap "
+        "or navigation path, which is the property that made the refresh budget fail: "
+        "that one fired once per `page.open()` and so scaled with the suite. This one "
+        "scales with the number of tests that deliberately test a channel, and the "
+        "budget is hourly rather than per-minute, so a burst of four workers cannot "
+        "exhaust it the way a per-minute budget is exhausted in seconds. If a journey "
+        "ever routes through here, this entry is wrong and the limit needs raising."
+    ),
 }
 
 

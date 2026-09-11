@@ -3,6 +3,7 @@ from app.common.types import LocationKey, SiteKey, SlotKey
 from app.domain.engines.water_mix_engine import WaterSourceValidator, WaterSourceWarning
 from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.models.site import Location, Site, SiteWaterConfig, Slot
+from app.domain.services.location_ownership import require_owned_site, resolve_owned_slot
 
 
 class SiteService:
@@ -51,9 +52,16 @@ class SiteService:
         return self._repo.get_locations_by_site(site_key)
 
     def get_location(self, key: LocationKey, tenant_key: str = "") -> Location:
+        """A location, optionally required to belong to ``tenant_key``.
+
+        Anchored on the parent site (#1397). This used to compare against
+        ``location.tenant_key``, which the write path never fills — so with a
+        tenant key supplied it refused **every** location including the caller's
+        own, and MCP ``set_plant_location`` answered 404 to every legitimate move.
+        """
         location = self._repo.get_location_or_raise(key)
         if tenant_key:
-            verify_tenant_ownership(location, tenant_key, "Location")
+            require_owned_site(self._repo, location.site_key, tenant_key, "Location", key)
         return location
 
     def create_location(self, location: Location) -> Location:
@@ -97,9 +105,14 @@ class SiteService:
         return self._repo.get_slots_by_location(location_key)
 
     def get_slot(self, key: SlotKey, tenant_key: str = "") -> Slot:
+        """A slot, optionally required to belong to ``tenant_key``.
+
+        Two hops — slot → location → site — for the reason ``get_location`` gives:
+        ``Slot.tenant_key`` is as empty as ``Location.tenant_key`` (#1397).
+        """
         slot = self._repo.get_slot_or_raise(key)
         if tenant_key:
-            verify_tenant_ownership(slot, tenant_key, "Slot")
+            resolve_owned_slot(self._repo, key, tenant_key)
         return slot
 
     def create_slot(self, slot: Slot) -> Slot:

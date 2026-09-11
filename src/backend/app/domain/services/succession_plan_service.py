@@ -1,13 +1,14 @@
 from pydantic import ValidationError as PydanticValidationError
 
 from app.common.enums import SuccessionPlanStatus
-from app.common.exceptions import NotFoundError, ValidationError
+from app.common.exceptions import ValidationError
 from app.common.tenant_guard import verify_tenant_ownership
 from app.domain.engines.succession_plan_engine import SuccessionPlanEngine
 from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.interfaces.succession_plan_repository import ISuccessionPlanRepository, SuccessionPlanKey
 from app.domain.models.planting_run import PlantingRun
 from app.domain.models.succession_plan import SuccessionPlan
+from app.domain.services.location_ownership import resolve_owned_location
 from app.domain.services.planting_run_service import PlantingRunService
 
 
@@ -156,11 +157,13 @@ class SuccessionPlanService:
         Generated runs inherit ``location_key`` verbatim, so an unverified foreign
         location would let a plan write runs into another tenant's location. When no
         ``site_repo`` is wired the check is skipped (pure-domain / unit contexts).
+
+        Anchored on the parent site (#1397). Written as
+        ``location.tenant_key != tenant_key`` this refused **every** location,
+        the caller's own included, because that field is persisted empty.
         """
         if location_key and self._site_repo is not None:
-            location = self._site_repo.get_location_by_key(location_key)
-            if location is None or location.tenant_key != tenant_key:
-                raise NotFoundError("Location", location_key)
+            resolve_owned_location(self._site_repo, location_key, tenant_key)
 
     def _persist_run(self, plan_key: SuccessionPlanKey, plan: SuccessionPlan, run: PlantingRun) -> PlantingRun:
         entry = self._engine.build_entry(plan)

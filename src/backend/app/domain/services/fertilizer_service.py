@@ -6,6 +6,7 @@ from app.domain.engines.area_dosing_engine import AreaDosingCalculator, AreaDosi
 from app.domain.interfaces.fertilizer_repository import IFertilizerRepository
 from app.domain.interfaces.site_repository import ISiteRepository
 from app.domain.models.fertilizer import Fertilizer, FertilizerStock
+from app.domain.services.location_ownership import resolve_owned_location
 
 
 class FertilizerService:
@@ -241,11 +242,19 @@ class FertilizerService:
         if location_key:
             if self._site_repo is None:
                 raise ValidationError(message="Site repository not configured for location resolution.")
-            location = self._site_repo.get_location_or_raise(location_key)
             # Tenant isolation (AP-8): a Location is a tenant resource, so a caller
             # must not resolve another tenant's bed area via its key.
-            if tenant_key and getattr(location, "tenant_key", None) != tenant_key:
-                raise NotFoundError("Location", location_key)
+            #
+            # Anchored on the parent site (#1397). Written as
+            # ``getattr(location, "tenant_key", None) != tenant_key`` this refused
+            # **every** location including the caller's own, because the field is
+            # empty on every row the write path produces — the #1352 direction, and
+            # it made area-based organic dosing unusable through the location path.
+            location = (
+                resolve_owned_location(self._site_repo, location_key, tenant_key)
+                if tenant_key
+                else self._site_repo.get_location_or_raise(location_key)
+            )
             if location.area_m2 <= 0:
                 raise ValidationError(message="Location has no area (area_m2) configured.")
             return location.area_m2

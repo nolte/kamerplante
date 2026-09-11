@@ -14,6 +14,7 @@ from app.domain.calculators.sun_calculator import calculate_sun_times
 from app.domain.engines.cycle_resolver import resolve_effective_cycle
 from app.domain.engines.cyclic_lifecycle_engine import CyclicLifecycleEngine
 from app.domain.engines.transition_trigger_evaluator import TransitionTriggerEvaluator
+from app.domain.services.location_ownership import find_owned_location
 from app.tasks import celery_app
 
 logger = structlog.get_logger()
@@ -46,13 +47,20 @@ def _indoor_light_hours_for_plant(plant, site_repo) -> float | None:
     location_key = getattr(plant, "location_key", None)
     if not location_key:
         return None
-    location = site_repo.get_location_by_key(location_key)
-    if location is None:
-        return None
+    plant_tenant = getattr(plant, "tenant_key", None)
     # get_location_by_key is not tenant-scoped and this system task iterates all
     # tenants (SEC-B4). Only trust a location that belongs to the plant's tenant.
-    plant_tenant = getattr(plant, "tenant_key", None)
-    if plant_tenant and location.tenant_key and location.tenant_key != plant_tenant:
+    #
+    # Anchored on the parent site (#1397). The previous form carried
+    # ``and location.tenant_key and`` in the middle, and that field is persisted
+    # empty on every row — so the condition short-circuited and the guard trusted
+    # every location it was handed, which is the opposite of what it says.
+    location = (
+        find_owned_location(site_repo, location_key, plant_tenant)
+        if plant_tenant
+        else site_repo.get_location_by_key(location_key)
+    )
+    if location is None:
         return None
     if location.light_type == LightType.NATURAL or location.use_dynamic_sunrise:
         return None

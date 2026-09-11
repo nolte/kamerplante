@@ -40,6 +40,7 @@ from app.domain.models.survival_stats import (
     TerminationCauseCount,
     TerminationTypeCount,
 )
+from app.domain.services.location_ownership import require_owned_site
 from app.domain.services.propagation_service import PropagationService
 
 if TYPE_CHECKING:
@@ -428,14 +429,13 @@ class PlantInstanceService:
     def _require_owned_site(self, site_key: str, tenant_key: str, entity_name: str, entity_key: str) -> None:
         """Anchor a row that carries no usable ``tenant_key`` on its parent site.
 
-        The raised :class:`NotFoundError` names the **referenced entity**, not the
-        site behind it: an absent location and a location under a foreign site must
-        answer identically, or the difference between the two messages is itself the
-        oracle the 404 exists to prevent.
+        Delegates to the shared anchor (#1397). This method was the one correct
+        implementation of the walk in the codebase; eight other sites had their
+        own, reading ``location.tenant_key`` — which is persisted empty — and
+        failing in three different directions. Keeping a private copy here while
+        the rest moved would have re-created the split it took nine sites to find.
         """
-        site = self._site_repo.get_site_by_key(site_key) if site_key else None
-        if site is None or site.tenant_key != tenant_key:
-            raise NotFoundError(entity_name, entity_key)
+        require_owned_site(self._site_repo, site_key, tenant_key, entity_name, entity_key)
 
     def create_plant(self, plant: PlantInstance, skip_validation: bool = False) -> PlantInstance:
         # SEC (#719): reject a foreign/unknown site_key before any write, mirroring the
