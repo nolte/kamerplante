@@ -45,12 +45,34 @@ from app.domain.models.site import RoWaterProfile, TapWaterProfile
 from app.domain.models.tenant_context import TenantContext
 from app.domain.services.fertilizer_service import FertilizerService
 
-router = APIRouter(prefix="/nutrient-calculations", tags=["nutrient-calculations"], responses=NOT_FOUND_RESPONSE)
+# GATED AT THE ROUTER, NOT AT EACH HANDLER (#1402).
+#
+# Seven of this module's eight write routes answered an UNAUTHENTICATED caller
+# until #1402 — every one except ``area-dosing``, which already carried ``ctx``.
+# They are mounted under ``/t/{tenant_slug}``, but that prefix is a path segment,
+# not a gate: ``tenant_scoped_router`` (``api/v1/tenant_scoped/router.py:66``)
+# declares only ``responses=AUTH_RESPONSES`` — documentation — and there is no
+# auth middleware. The ``{tenant_slug}`` was an arbitrary string.
+#
+# The #1353 sweep saw them and stayed silent: its tenant predicate asks whether
+# ``ctx`` IS ``get_current_tenant``, and a handler with no ``ctx`` at all fails
+# that test in the passing direction. #1402 replaces the question.
+#
+# On the ROUTER so a new calculator inherits it. ``area-dosing`` keeps its own
+# ``ctx`` parameter because it USES the tenant key; FastAPI resolves the
+# dependency once per request, so the two declarations cost nothing.
+router = APIRouter(
+    prefix="/nutrient-calculations",
+    tags=["nutrient-calculations"],
+    responses=NOT_FOUND_RESPONSE,
+    dependencies=[Depends(get_current_tenant)],
+)
 
 
 @router.post("/mixing-protocol", response_model=MixingProtocolResponse)
 def mixing_protocol(
     body: MixingProtocolRequest,
+    ctx: TenantContext = Depends(get_current_tenant),
     service: FertilizerService = Depends(get_fertilizer_service),
 ) -> MixingProtocolResponse:
     """Compute a mixing protocol via the canonical EC-budget pipeline (REQ-004-A).
@@ -66,7 +88,7 @@ def mixing_protocol(
 
     fert_inputs: list[EcBudgetFertilizerInput] = []
     for key in body.fertilizer_keys:
-        fert = service.get_fertilizer(key)
+        fert = service.get_fertilizer(key, tenant_key=ctx.tenant_key)
         fert_inputs.append(
             EcBudgetFertilizerInput(
                 key=key,
@@ -171,12 +193,13 @@ def runoff_analysis(body: RunoffRequest):
 @router.post("/mixing-safety", response_model=MixingSafetyResponse)
 def mixing_safety(
     body: MixingSafetyRequest,
+    ctx: TenantContext = Depends(get_current_tenant),
     service: FertilizerService = Depends(get_fertilizer_service),
 ):
     """Validate a fertilizer combination for mixing-order and precipitation safety."""
     fertilizers = []
     for key in body.fertilizer_keys:
-        fert = service.get_fertilizer(key)
+        fert = service.get_fertilizer(key, tenant_key=ctx.tenant_key)
         fertilizers.append(fert)
 
     validator = MixingSafetyValidator()
@@ -256,6 +279,7 @@ def water_mix_reverse(body: WaterMixReverseRequest):
 @router.post("/ec-budget", response_model=EcBudgetResponse)
 def ec_budget(
     body: EcBudgetRequest,
+    ctx: TenantContext = Depends(get_current_tenant),
     service: FertilizerService = Depends(get_fertilizer_service),
 ):
     """Run the canonical EC-budget pipeline (REQ-004-A) for a fertilizer selection."""
@@ -267,7 +291,7 @@ def ec_budget(
     recipe_map: dict[str, float] = {}
 
     for fert_req in body.fertilizer_keys:
-        fert = service.get_fertilizer(fert_req.key)
+        fert = service.get_fertilizer(fert_req.key, tenant_key=ctx.tenant_key)
         fert_inputs.append(
             EcBudgetFertilizerInput(
                 key=fert_req.key,
@@ -284,13 +308,13 @@ def ec_budget(
     # Resolve CalMag EC if provided
     calmag_ec_per_ml = 0.0
     if body.calmag_key:
-        calmag_fert = service.get_fertilizer(body.calmag_key)
+        calmag_fert = service.get_fertilizer(body.calmag_key, tenant_key=ctx.tenant_key)
         calmag_ec_per_ml = calmag_fert.ec_contribution_per_ml
 
     # Resolve Silicate EC if provided
     silicate_ec_per_ml = 0.0
     if body.silicate_key:
-        silicate_fert = service.get_fertilizer(body.silicate_key)
+        silicate_fert = service.get_fertilizer(body.silicate_key, tenant_key=ctx.tenant_key)
         silicate_ec_per_ml = silicate_fert.ec_contribution_per_ml
 
     inp = EcBudgetInput(

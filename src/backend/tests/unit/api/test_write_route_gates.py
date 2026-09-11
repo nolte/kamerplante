@@ -50,11 +50,17 @@ ADMIN_PREFIX = "/api/v1/admin"
 class Operation:
     """One mounted write operation, with the dependencies its signature declares."""
 
-    def __init__(self, method: str, path: str, endpoint: Any) -> None:
+    def __init__(self, method: str, path: str, endpoint: Any, route: Any = None) -> None:
         self.method = method
         self.path = path
         self.module = endpoint.__module__
         self.name = endpoint.__name__
+        #: The mounted route itself, kept so the THIRD question below can read
+        #: `route.dependant` transitively. `inspect.signature` sees only what the
+        #: handler names; a router-level `APIRouter(dependencies=[...])` is
+        #: invisible to it, in both directions — a correctly gated route passes
+        #: for the wrong reason, and an ungated sibling passes identically.
+        self.route = route
         self.dependencies: dict[str, Any] = {}
         try:
             signature = inspect.signature(endpoint)
@@ -104,7 +110,7 @@ def mounted_write_operations() -> list[Operation]:
             path = prefix + (getattr(route, "path", "") or "")
             for method in getattr(route, "methods", ()) or ():
                 if method in WRITE_METHODS:
-                    found.append(Operation(method, path, endpoint))
+                    found.append(Operation(method, path, endpoint, route))
 
     walk(api_router)
     return found
@@ -147,6 +153,20 @@ _TENANT_ALLOWLIST: dict[str, str] = {
     # repository create/update/delete.
     "nutrient_plans.tenant_router.calculate_dosages": "computation, no write",
     "nutrient_calculations.router.area_dosing": "computation, no write",
+    # The three below joined this list in #1402, and the route they took here is
+    # worth stating: they were not "ungated members-only routes" being written
+    # down — they answered an ANONYMOUS caller, and each of them reads the
+    # fertilizer catalogue with `FertilizerService.get_fertilizer`, whose
+    # `tenant_key=""` default skips its own ownership check. Gating them on
+    # `get_current_tenant` and threading `ctx.tenant_key` into that call is what
+    # moved them from "unauthenticated, reading across tenants" to "computation
+    # any member may run" — the same category their `area_dosing` sibling was
+    # always in. The four remaining calculators in that module need no entry:
+    # they carry the router-level gate and no `ctx` parameter, so this sweep's
+    # question ("is `ctx` bare?") does not apply to them at all.
+    "nutrient_calculations.router.mixing_protocol": "computation over the caller's own catalogue, no write",
+    "nutrient_calculations.router.mixing_safety": "computation over the caller's own catalogue, no write",
+    "nutrient_calculations.router.ec_budget": "computation over the caller's own catalogue, no write",
     "tanks.tenant_router.calculate_ec_dilution": "computation over a read tank, no write",
     "plant_instances.tenant_router.validate_planting": "validation, no write",
     "tasks.tenant_router.validate_hst": "validation, no write",
@@ -166,6 +186,88 @@ _TENANT_ALLOWLIST: dict[str, str] = {
 #: reworded (#1401): an allowlist that writes a drift down as approved is worse than no
 #: allowlist, because the next reader takes it as a decision someone made on purpose.
 _ADMIN_ALLOWLIST: dict[str, str] = {}
+
+
+#: THE THIRD QUESTION (#1402), and it is a different one from the two above.
+#:
+#: Both selectors above key on the PRESENCE of a specific weak dependency: the
+#: tenant half asks whether `ctx` IS `get_current_tenant`, the admin half whether
+#: `get_current_user` appears. A route carrying NO dependency at all fails both
+#: tests in the passing direction, and 133 write operations lie outside both
+#: prefixes besides. Measured on 2026-09-12, before this question existed:
+#: **24** of 439 mounted write operations resolved no authorisation dependency
+#: anywhere — fourteen of them not deliberately public. Seven were the
+#: calculators under `/api/v1/calculations`, invisible because they fall through
+#: both prefixes; seven were under `/t/{tenant_slug}/nutrient-calculations`,
+#: which the tenant selector SEES and does not report. Three of those seven also
+#: read the fertilizer catalogue with `FertilizerService.get_fertilizer`'s
+#: `tenant_key=""` default, which skips its own ownership check.
+#:
+#: This question asks instead: does the effective dependency chain of this write
+#: operation contain ANY authorisation dependency? It reads `route.dependant`
+#: transitively rather than `inspect.signature`, so a router-level
+#: `APIRouter(dependencies=[...])` counts — which is how the fourteen were fixed,
+#: and a per-handler read would have reported them as still open.
+#:
+#: It is deliberately coarse. "Carries some authorisation" is not "carries the
+#: RIGHT authorisation": the installation-wide master data behind bare
+#: `get_current_user` (#1402 group B) passes this question and is still a defect.
+#: A coarse question that cannot be fooled by absence is worth more than a
+#: precise one with a hole, and the precise one is the next refinement.
+_AUTHORISATION_MARKERS = (
+    "current_user",
+    "current_tenant",
+    "tenant_context",
+    "platform_admin",
+    "admin_scope",
+    "permission",
+    "tenant_role",
+    "api_key",
+    "service_account",
+    "attachment_permission",
+    "mcp_",
+)
+
+#: Write operations that legitimately resolve no authorisation at all. Every entry
+#: is an endpoint a caller must reach BEFORE having a session, or one the product
+#: publishes on purpose. Anything else here is a defect wearing a reason.
+_PUBLIC_ALLOWLIST: dict[str, str] = {
+    "auth.router.login": "issues the session; cannot require one",
+    "auth.router.register": "creates the account; cannot require one",
+    "auth.router.refresh": "presents the refresh cookie, not an access token",
+    "auth.router.logout": "must succeed for an expired or absent session",
+    "auth.router.request_password_reset": "the caller has lost the credential",
+    "auth.router.confirm_password_reset": "authorised by the emailed token",
+    "auth.router.verify_email": "authorised by the emailed token",
+    "auth.router.redeem_device_pairing": "authorised by the pairing code",
+    "privacy.router.confirm_email_change": "authorised by the emailed token (REQ-025)",
+    "ki_assistent.public_router.public_ask": "REQ-031 light-mode probe, published on purpose",
+}
+
+
+def _authorisation_chain(operation: Operation) -> list[str]:
+    """Every dependency name in the operation's effective chain, router level included."""
+    dependant = getattr(operation.route, "dependant", None)
+    if dependant is None:  # pragma: no cover - defensive
+        return []
+
+    names: list[str] = []
+    seen: set[int] = set()
+
+    def walk(node: Any) -> None:
+        for sub in node.dependencies:
+            if id(sub) in seen:
+                continue
+            seen.add(id(sub))
+            names.append(getattr(sub.call, "__name__", str(sub.call)))
+            walk(sub)
+
+    walk(dependant)
+    return names
+
+
+def _resolves_authorisation(operation: Operation) -> bool:
+    return any(marker in name for name in _authorisation_chain(operation) for marker in _AUTHORISATION_MARKERS)
 
 
 def _tenant_write_operations() -> list[Operation]:
@@ -393,3 +495,124 @@ class TestTheGatesActuallyRefuse:
         by_id = {op.id: op for op in _tenant_write_operations()}
         check = by_id[route_id].dependencies["ctx"]
         assert check(_grower()) is not None
+
+
+class TestEveryWriteOperationResolvesSomeAuthorisation:
+    """The third question (#1402): is ANYTHING gating this route?
+
+    The two sweeps above ask whether a specific weak dependency is present. This
+    one asks whether any authorisation is, which is the question that catches a
+    route carrying none — the case that passed both of them silently, 24 times.
+    """
+
+    def test_no_write_operation_is_reachable_without_authorisation(self):
+        offenders = [
+            op
+            for op in mounted_write_operations()
+            if not _resolves_authorisation(op) and op.id not in _PUBLIC_ALLOWLIST
+        ]
+        assert not offenders, (
+            "These write operations resolve no authorisation dependency anywhere in their "
+            "effective chain — not on the handler, not on their router, not on a parent "
+            "router. Gate them, or add them to _PUBLIC_ALLOWLIST with a reason that "
+            "survives the question 'why may an anonymous caller do this?':\n  " + _format(offenders)
+        )
+
+    def test_every_public_entry_still_exists_and_is_still_public(self):
+        """Both halves of the obsolescence rule, and the second is the one that rots.
+
+        An entry naming a route that was since gated would go on excusing a gate
+        nobody needs excused, and the next reader takes it as a decision. The
+        same rule `check_layer_imports` and `check_route_role_guards` follow.
+        """
+        by_id = {op.id: op for op in mounted_write_operations()}
+        stale = []
+        for route_id in _PUBLIC_ALLOWLIST:
+            operation = by_id.get(route_id)
+            if operation is None:
+                stale.append(f"{route_id}: no longer mounted")
+            elif _resolves_authorisation(operation):
+                stale.append(f"{route_id}: now resolves authorisation — drop the entry")
+        assert not stale, "Obsolete _PUBLIC_ALLOWLIST entries:\n  " + "\n  ".join(stale)
+
+    def test_every_reason_is_written_out(self):
+        for route_id, reason in _PUBLIC_ALLOWLIST.items():
+            assert len(reason) >= 12, f"{route_id} carries no usable reason: {reason!r}"
+
+    def test_the_allowlist_is_small(self):
+        """A ceiling, because the cheapest way to make this test green is to grow the list.
+
+        Ten entries today, all of them pre-session endpoints or a published probe.
+        A twelfth is not automatically wrong, but it should cost a conversation.
+        """
+        assert len(_PUBLIC_ALLOWLIST) <= 12, (
+            f"_PUBLIC_ALLOWLIST has grown to {len(_PUBLIC_ALLOWLIST)} entries. "
+            "Adding a route here makes it anonymously reachable; say why in the issue, not only in the dict."
+        )
+
+
+class TestTheThirdQuestionCanFail:
+    """Falsifiability for the question above — a sweep that cannot report is not a gate.
+
+    `TestTheGuardCanFail` does this for the first two questions. This one exists
+    because the third question is the one that was missing, and a question added
+    to close a hole is exactly the kind that gets added inert.
+    """
+
+    def test_a_router_level_gate_counts_as_authorisation(self):
+        """The positive control, and it is not decoration.
+
+        The fourteen routes #1402 gated were fixed at the ROUTER, not the handler.
+        Read through `inspect.signature` they still name no auth parameter, so a
+        per-handler implementation of this question would report them as open
+        forever and the triage would never end.
+        """
+        by_id = {op.id: op for op in mounted_write_operations()}
+        operation = by_id["calculations.router.calc_vpd"]
+        assert operation.dependencies == {} or "ctx" not in operation.dependencies
+        assert _resolves_authorisation(operation), (
+            "calc_vpd is gated by APIRouter(dependencies=[Depends(get_current_user)]); "
+            "if this fails, the question reads the handler signature and not the effective chain"
+        )
+
+    def test_an_ungated_operation_would_be_reported(self):
+        """The negative control, built rather than found — the tree has none left."""
+
+        class _NoDependencies:
+            dependencies: list[Any] = []
+
+        class _BareRoute:
+            dependant = _NoDependencies()
+
+        def _probe() -> None: ...
+
+        _probe.__module__ = "app.api.v1.calculations.router"
+        operation = Operation("POST", "/api/v1/calculations/probe", _probe, _BareRoute())
+        assert not _resolves_authorisation(operation)
+        assert operation.id not in _PUBLIC_ALLOWLIST
+
+    def test_the_markers_do_not_match_everything(self):
+        """A marker list broad enough to match any dependency would make this vacuous."""
+
+        class _Unrelated:
+            def __init__(self) -> None:
+                self.dependencies: list[Any] = []
+
+        class _Call:
+            __name__ = "get_fertilizer_service"
+
+        class _Sub:
+            call = _Call()
+            dependencies: list[Any] = []
+
+        class _Route:
+            dependant = type("D", (), {"dependencies": [_Sub()]})()
+
+        def _probe() -> None: ...
+
+        _probe.__module__ = "app.api.v1.calculations.router"
+        operation = Operation("POST", "/x", _probe, _Route())
+        assert _authorisation_chain(operation) == ["get_fertilizer_service"]
+        assert not _resolves_authorisation(operation), (
+            "a service dependency must not read as authorisation; the marker list is too broad"
+        )

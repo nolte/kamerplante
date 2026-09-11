@@ -5,6 +5,27 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.common.dependencies import get_auth_provider
+from app.common.exceptions import UnauthorizedError
+from app.domain.interfaces.auth_provider import IAuthProvider
+from app.domain.models.user import User
+
+
+class _HeaderAuthProvider(IAuthProvider):
+    """Refuses an absent Authorization header, accepts any present one (#1402)."""
+
+    def resolve_user(self, authorization: str | None) -> User:
+        if not authorization:
+            raise UnauthorizedError("Missing credentials.")
+        return User(key="user-a", email="caller@example.org", display_name="Caller", email_verified=True)
+
+    def resolve_user_optional(self, authorization: str | None) -> User | None:
+        return self.resolve_user(authorization) if authorization else None
+
+    def is_authentication_required(self) -> bool:
+        return True
+
+
 FORBIDDEN_PATTERNS = [
     r"ArangoDB",
     r"arango",
@@ -30,10 +51,26 @@ FORBIDDEN_PATTERNS = [
 
 
 def _get_client():
+    """An AUTHENTICATED client, because the probe endpoint is gated since #1402.
+
+    This file tests the NFR-006 error envelope and uses ``/api/v1/calculations/vpd``
+    only as a convenient operation to provoke a 422 against. That endpoint answered
+    an anonymous caller until #1402 gated its router; without a credential every
+    assertion here would now measure the 401 envelope instead of the validation
+    one, which is a different contract and would pass or fail for reasons that have
+    nothing to do with what the file is about.
+
+    The substitution is at the auth PROVIDER, not at ``get_current_user``: the
+    production provider needs a database connection this file does not stand up,
+    so an anonymous call answers 500 rather than 401.
+    """
     with patch("app.main.get_connection"), patch("app.main.ensure_collections"):
         from app.main import app
 
-        return TestClient(app, raise_server_exceptions=False)
+        app.dependency_overrides[get_auth_provider] = _HeaderAuthProvider
+        client = TestClient(app, raise_server_exceptions=False)
+        client.headers["Authorization"] = "Bearer test-token"
+        return client
 
 
 def _assert_error_schema(body: dict) -> None:
