@@ -155,13 +155,15 @@ _TENANT_ALLOWLIST: dict[str, str] = {
 #: `get_current_user`. The bar is higher here: these change configuration for
 #: everyone, so an entry needs a reason that survives the question "what stops a
 #: viewer in an unrelated tenant from doing this?".
-_ADMIN_ALLOWLIST: dict[str, str] = {
-    "admin.recognition.router.start_acquisition": (
-        "deliberate and documented at the site: the UI-facing counterpart to the platform-admin "
-        "/admin/reference-images/acquire, available in light + full mode so the settings-card "
-        "button works in both"
-    ),
-}
+#: Empty, and that is the point. It held one entry —
+#: ``admin.recognition.router.start_acquisition`` — whose reason was "deliberate and
+#: documented at the site". The route's docstring did say so; the pre-merge review of
+#: #1385 read it and found the argument justified the *card* being reachable, not the
+#: *route* being open, while the identical ``/acquire`` on the ``admin/pests`` sibling
+#: carried ``require_platform_admin`` all along. The entry is deleted rather than
+#: reworded (#1401): an allowlist that writes a drift down as approved is worse than no
+#: allowlist, because the next reader takes it as a decision someone made on purpose.
+_ADMIN_ALLOWLIST: dict[str, str] = {}
 
 
 def _tenant_write_operations() -> list[Operation]:

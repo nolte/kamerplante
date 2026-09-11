@@ -128,6 +128,26 @@ describe('Integrations tab — installation-wide settings are platform-admin onl
     await waitFor(() => expect(settingsReads).toBe(0));
   });
 
+  it('hides the two installation-wide recognition cards from a plain member', async () => {
+    // #1401. The DINOv2 card renders an acquire button that dispatches an
+    // installation-wide run, and its status read returns the inference service's
+    // internal URL; the pest card's routes were gated server-side while the card
+    // itself was shown to everyone, so its button answered 403.
+    renderTab(false);
+    await screen.findByTestId('smart-home-master-toggle');
+
+    expect(screen.queryByTestId('recognition-status-card')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('pest-recognition-admin-card')).not.toBeInTheDocument();
+  });
+
+  it('shows a platform admin both recognition cards', async () => {
+    // The control. Without it the assertion above is satisfied by a page that
+    // renders neither card for anyone.
+    renderTab(true);
+    expect(await screen.findByTestId('recognition-status-card')).toBeInTheDocument();
+    expect(screen.getByTestId('pest-recognition-admin-card')).toBeInTheDocument();
+  });
+
   it('shows a platform admin both cards, and reads the settings', async () => {
     // The control. Without it, a page that renders neither card for anyone
     // passes both tests above.

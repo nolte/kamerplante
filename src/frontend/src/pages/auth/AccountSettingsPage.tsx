@@ -1510,20 +1510,24 @@ export default function AccountSettingsPage() {
           </Card>
           )}
 
-          {/* Self-hosted DINOv2 recognition status — REQ-029-A. Visible to any
-              signed-in user, unlike the Pl@ntNet section above, which #1385 put
-              behind the platform-admin gate.
-              An earlier version of this comment justified that with "read-only,
-              discloses no endpoint or credential". Both halves were wrong, and the
-              pre-merge review of #1385 caught it: the card renders an acquire
-              button that POSTs /admin/recognition/acquire (gated on
-              get_current_user alone, unlike the identical /acquire on the
-              admin/pests sibling), and GET /admin/recognition/status returns
-              settings.inference_service_url. It stays here for now because gating
-              the card without gating the route is half a repair; both happen
-              together in #1353. */}
-          <RecognitionStatusCard gridColumn="1 / -1" />
-          <PestRecognitionAdminCard gridColumn="1 / -1" />
+          {/* Self-hosted DINOv2 recognition (REQ-029-A) and the pest few-shot index
+              (REQ-044). Both are installation-wide admin surfaces, so both are gated
+              (#1401).
+
+              An earlier version of this comment called the recognition card
+              "read-only, discloses no endpoint or credential" and left it visible to
+              everyone. Both halves were wrong: it renders an acquire button that
+              POSTs /admin/recognition/acquire, and GET /admin/recognition/status
+              returns the inference service's internal URL. Those two routes now carry
+              require_platform_admin, matching the admin/pests sibling that had it all
+              along.
+
+              The pest card's routes were already gated server-side; it was rendered to
+              every member regardless, so its button looked live and answered 403 — the
+              #1339 class. Gated here for the same reason, not because anything about
+              it changed. */}
+          {canManageInstanceSettings && <RecognitionStatusCard gridColumn="1 / -1" />}
+          {canManageInstanceSettings && <PestRecognitionAdminCard gridColumn="1 / -1" />}
           {/* REQ-010 / SEC-003 — moderate user-contributed pest photos and
               promote the good ones to global visibility. Defense-in-depth: only
               rendered for platform admins (the ``ha`` tab is not admin-gated like
