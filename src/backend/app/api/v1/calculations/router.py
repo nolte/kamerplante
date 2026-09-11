@@ -16,6 +16,7 @@ from app.api.v1.calculations.schemas import (
     VPDResponse,
 )
 from app.common.auth import get_current_user
+from app.common.openapi_responses import AUTH_RESPONSES
 from app.domain.calculators.gdd_calculator import calculate_accumulated_gdd
 from app.domain.calculators.photoperiod_calculator import calculate_dli, calculate_transition_schedule
 from app.domain.calculators.slot_capacity_calculator import (
@@ -46,10 +47,19 @@ from app.domain.calculators.vpd_calculator import calculate_vpd, classify_vpd
 # times from coordinates — mounted globally at ``/api/v1/calculations`` with no
 # tenant in the path. They read no tenant data, so a tenant resolution would be
 # an invention; what they needed was to stop being reachable by anyone at all.
+# ``responses=AUTH_RESPONSES`` because the gate has to appear in the CONTRACT and
+# not only in the code: without it the OpenAPI document describes seven
+# operations that can answer 401 and documents neither 401 nor 403, so a
+# generated client and ``docs/*/api/`` show the refusal as undocumented. Every
+# other auth-requiring router in the tree declares it (``imports``,
+# ``companion_planting``, ``hardiness_zones``, ``knowledge``, ``mcp``,
+# ``tenant_scoped``); ``nutrient_calculations`` inherits it from
+# ``tenant_scoped_router``, which is why only this file needed it.
 router = APIRouter(
     prefix="/calculations",
     tags=["calculations"],
     dependencies=[Depends(get_current_user)],
+    responses=AUTH_RESPONSES,
 )
 
 

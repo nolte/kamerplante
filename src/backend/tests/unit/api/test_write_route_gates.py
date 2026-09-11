@@ -167,6 +167,19 @@ _TENANT_ALLOWLIST: dict[str, str] = {
     "nutrient_calculations.router.mixing_protocol": "computation over the caller's own catalogue, no write",
     "nutrient_calculations.router.mixing_safety": "computation over the caller's own catalogue, no write",
     "nutrient_calculations.router.ec_budget": "computation over the caller's own catalogue, no write",
+    # These four reach no database at all — they compute from the request body
+    # alone. They are listed here rather than left silent because the router-level
+    # gate #1402 gave them removed `ctx` from their signatures, and the version of
+    # this sweep that read `inspect.signature` therefore stopped reporting them
+    # while the third question was satisfied by the router. Four routes reported by
+    # nothing, recorded nowhere: the opt-in drift this file exists to catch, moved
+    # one level up by the change that was closing it. The sweep now reads the
+    # effective chain, so the router-level gate is visible to it and these four
+    # need the same written decision as their siblings.
+    "nutrient_calculations.router.flushing_protocol": "computation from the request body, no read, no write",
+    "nutrient_calculations.router.runoff_analysis": "computation from the request body, no read, no write",
+    "nutrient_calculations.router.water_mix": "computation from the request body, no read, no write",
+    "nutrient_calculations.router.water_mix_reverse": "computation from the request body, no read, no write",
     "tanks.tenant_router.calculate_ec_dilution": "computation over a read tank, no write",
     "plant_instances.tenant_router.validate_planting": "validation, no write",
     "tasks.tenant_router.validate_hst": "validation, no write",
@@ -214,19 +227,80 @@ _ADMIN_ALLOWLIST: dict[str, str] = {}
 #: `get_current_user` (#1402 group B) passes this question and is still a defect.
 #: A coarse question that cannot be fooled by absence is worth more than a
 #: precise one with a hole, and the precise one is the next refinement.
-_AUTHORISATION_MARKERS = (
-    "current_user",
-    "current_tenant",
-    "tenant_context",
-    "platform_admin",
-    "admin_scope",
-    "permission",
-    "tenant_role",
-    "api_key",
-    "service_account",
-    "attachment_permission",
-    "mcp_",
+#: Dependencies that actually REFUSE a caller, by qualified name. A set of exact
+#: names and not substring markers, because the first version of this list used
+#: substrings and three of them were wrong in the permissive direction: `"mcp_"`
+#: matched `require_mcp_enabled` (an operator feature flag that 404s when MCP is
+#: off and authorises nobody when it is on) plus `get_mcp_dispatcher` and
+#: `get_mcp_session_store`; `"api_key"` matched the `APIKeyHeader` scheme object,
+#: which carries `auto_error=False` and therefore never refuses anything. No route
+#: was saved by a weak match alone when this was found, so it was latent — but a
+#: write route added under `/api/v1/mcp` carrying only `get_mcp_dispatcher` would
+#: have counted as authorised and been anonymously reachable.
+#:
+#: `__qualname__` rather than `__name__`: the three `require_*` factories all
+#: return a closure called `_check`, indistinguishable by name and exact by
+#: qualified name.
+_AUTHORISATION: frozenset[str] = frozenset(
+    {
+        "get_current_user",
+        "get_current_tenant",
+        "require_platform_admin",
+        "_require_platform_admin",
+        "require_permission.<locals>._check",
+        "require_tenant_role.<locals>._check",
+        "require_admin_scope.<locals>._check",
+        "require_attachment_permission.<locals>._dependency",
+        "get_mcp_principal",
+        "get_mcp_authenticator",
+    }
 )
+
+#: The subset above that gates on MORE than "is authenticated" or "is a member".
+_ROLE_GATES: frozenset[str] = frozenset(
+    {
+        "require_permission.<locals>._check",
+        "require_tenant_role.<locals>._check",
+        "require_admin_scope.<locals>._check",
+        "require_platform_admin",
+        "_require_platform_admin",
+        "require_attachment_permission.<locals>._dependency",
+        "get_mcp_principal",
+        "get_mcp_authenticator",
+    }
+)
+
+#: Dependencies whose NAME reads like authorisation and which authorise nobody.
+#: Enumerated with a reason so the classification cannot drift silently:
+#: `test_every_auth_shaped_dependency_is_classified` fails on a name in the live
+#: app that matches neither set — the obsolescence rule the allowlists already
+#: follow, applied one level up to the vocabulary itself.
+_NOT_AUTHORISATION: dict[str, str] = {
+    "require_mcp_enabled": "operator feature flag; 404s when MCP is off, authorises nobody when on",
+    "require_ai_tenant_enabled": "REQ-031 feature flag, not a caller check",
+    "require_ai_feature_flag": "REQ-031 operator flag, not a caller check",
+    "get_is_platform_admin": "returns a bool for the caller to branch on; refuses nobody",
+    "APIKeyHeader": "scheme object with auto_error=False - extracts a header, never refuses",
+    "HTTPBearer": "scheme object; extraction only, the provider decides",
+    "get_auth_provider": "constructs the provider; get_current_user is what calls it",
+    "get_auth_service": "service dependency",
+    "get_tenant_service": "service dependency",
+    "get_tenant_repo": "repository dependency",
+    "get_user_service": "service dependency",
+    "get_user_preference_service": "service dependency",
+    "get_oauth_engine": "engine dependency",
+    "get_active_tenant_key": "resolves the header slug; the refusal is the get_current_user beneath it",
+    "get_active_tenant_context": "same - authorisation is the get_current_user it depends on",
+    "get_mcp_dispatcher": "infrastructure; dispatches after get_mcp_principal has decided",
+    "get_mcp_session_store": "infrastructure",
+}
+
+#: Substrings that make a dependency name "auth-shaped" for the classification
+#: guard. Deliberately generous: a name caught here and in neither set is a test
+#: failure asking for a one-line decision, which is cheap. A name NOT caught here
+#: is assumed infrastructure, which is the residual risk and why this leans wide.
+_AUTH_SHAPED = ("auth", "admin", "tenant", "user", "principal", "permission", "role", "require_", "key")
+
 
 #: Write operations that legitimately resolve no authorisation at all. Every entry
 #: is an endpoint a caller must reach BEFORE having a session, or one the product
@@ -259,7 +333,8 @@ def _authorisation_chain(operation: Operation) -> list[str]:
             if id(sub) in seen:
                 continue
             seen.add(id(sub))
-            names.append(getattr(sub.call, "__name__", str(sub.call)))
+            call = sub.call
+            names.append(getattr(call, "__qualname__", type(call).__name__))
             walk(sub)
 
     walk(dependant)
@@ -267,7 +342,28 @@ def _authorisation_chain(operation: Operation) -> list[str]:
 
 
 def _resolves_authorisation(operation: Operation) -> bool:
-    return any(marker in name for name in _authorisation_chain(operation) for marker in _AUTHORISATION_MARKERS)
+    return bool(set(_authorisation_chain(operation)) & _AUTHORISATION)
+
+
+def _resolves_bare_tenant_context(operation: Operation) -> bool:
+    """Authenticated and a member, and nothing beyond that.
+
+    Read from the effective chain rather than `inspect.signature`. The signature
+    read had a blind spot that #1402 created and then had to close: moving the
+    `nutrient_calculations` gate onto its ROUTER removed `ctx` from four
+    handlers' signatures, so this sweep stopped seeing them while the third
+    question was satisfied by the router-level `get_current_tenant`. Four routes
+    were reported by nothing and recorded in no allowlist — the opt-in drift this
+    file exists to catch, relocated one level up.
+    """
+    names = set(_authorisation_chain(operation))
+    return "get_current_tenant" in names and not (names & _ROLE_GATES)
+
+
+def _resolves_bare_user(operation: Operation) -> bool:
+    """Authenticated, with no role or scope gate above it."""
+    names = set(_authorisation_chain(operation))
+    return "get_current_user" in names and not (names & _ROLE_GATES)
 
 
 def _tenant_write_operations() -> list[Operation]:
@@ -338,7 +434,7 @@ class TestTenantWriteGates:
         offenders = [
             op
             for op in _tenant_write_operations()
-            if op.dependencies.get("ctx") is get_current_tenant and op.id not in _TENANT_ALLOWLIST
+            if _resolves_bare_tenant_context(op) and op.id not in _TENANT_ALLOWLIST
         ]
         assert not offenders, (
             "These tenant-scoped write routes resolve `ctx` through bare `get_current_tenant`, "
@@ -360,7 +456,7 @@ class TestTenantWriteGates:
             operation = by_id.get(route_id)
             if operation is None:
                 stale.append(f"{route_id}: no such tenant write route ({reason})")
-            elif operation.dependencies.get("ctx") is not get_current_tenant:
+            elif not _resolves_bare_tenant_context(operation):
                 stale.append(f"{route_id}: now gated, drop the entry ({reason})")
         assert not stale, "Obsolete _TENANT_ALLOWLIST entries:\n  " + "\n  ".join(stale)
 
@@ -373,9 +469,7 @@ class TestTenantWriteGates:
 class TestAdminWriteGates:
     def test_no_admin_write_route_resolves_its_caller_through_bare_get_current_user(self):
         offenders = [
-            op
-            for op in _admin_write_operations()
-            if get_current_user in op.dependencies.values() and op.id not in _ADMIN_ALLOWLIST
+            op for op in _admin_write_operations() if _resolves_bare_user(op) and op.id not in _ADMIN_ALLOWLIST
         ]
         assert not offenders, (
             "These routes write installation-wide configuration behind `get_current_user` alone, "
@@ -390,7 +484,7 @@ class TestAdminWriteGates:
             operation = by_id.get(route_id)
             if operation is None:
                 stale.append(f"{route_id}: no such admin write route ({reason})")
-            elif get_current_user not in operation.dependencies.values():
+            elif not _resolves_bare_user(operation):
                 stale.append(f"{route_id}: now gated, drop the entry ({reason})")
         assert not stale, "Obsolete _ADMIN_ALLOWLIST entries:\n  " + "\n  ".join(stale)
 
@@ -591,18 +685,21 @@ class TestTheThirdQuestionCanFail:
         assert not _resolves_authorisation(operation)
         assert operation.id not in _PUBLIC_ALLOWLIST
 
-    def test_the_markers_do_not_match_everything(self):
-        """A marker list broad enough to match any dependency would make this vacuous."""
+    def test_a_non_authorising_dependency_does_not_count(self):
+        """A service dependency must not read as authorisation.
 
-        class _Unrelated:
-            def __init__(self) -> None:
-                self.dependencies: list[Any] = []
+        The first version of this file matched substrings, and `"api_key"` matched
+        the `APIKeyHeader` scheme object while `"mcp_"` matched
+        `require_mcp_enabled`. Both authorise nobody. This probes the real
+        classification rather than a hand-picked name.
+        """
 
-        class _Call:
-            __name__ = "get_fertilizer_service"
+        def _service_dependency() -> None: ...
+
+        _service_dependency.__qualname__ = "get_fertilizer_service"
 
         class _Sub:
-            call = _Call()
+            call = _service_dependency
             dependencies: list[Any] = []
 
         class _Route:
@@ -613,6 +710,48 @@ class TestTheThirdQuestionCanFail:
         _probe.__module__ = "app.api.v1.calculations.router"
         operation = Operation("POST", "/x", _probe, _Route())
         assert _authorisation_chain(operation) == ["get_fertilizer_service"]
-        assert not _resolves_authorisation(operation), (
-            "a service dependency must not read as authorisation; the marker list is too broad"
+        assert not _resolves_authorisation(operation)
+
+
+class TestTheClassificationItselfCannotDrift:
+    """The vocabulary is an allowlist too, and allowlists rot (#1402).
+
+    `_AUTHORISATION` decides what the three sweeps above believe a gate is. A new
+    dependency named like one and classified as neither would be treated as
+    infrastructure and silently stop counting — the same failure shape as a seed
+    file outside a `check-jsonschema` hook or a write route outside a selector.
+    """
+
+    def test_every_auth_shaped_dependency_is_classified(self):
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        unclassified = sorted(
+            name
+            for name in seen
+            if any(shape in name.lower() for shape in _AUTH_SHAPED)
+            and name not in _AUTHORISATION
+            and name not in _NOT_AUTHORISATION
         )
+        assert not unclassified, (
+            "These dependencies are mounted on write routes and read like authorisation, but the "
+            "sweeps classify them as neither. Add each to _AUTHORISATION if it refuses a caller, or "
+            "to _NOT_AUTHORISATION with the reason it does not:\n  " + "\n  ".join(unclassified)
+        )
+
+    def test_the_two_sets_are_disjoint(self):
+        overlap = _AUTHORISATION & frozenset(_NOT_AUTHORISATION)
+        assert not overlap, f"classified as both: {sorted(overlap)}"
+
+    def test_role_gates_are_a_subset_of_authorisation(self):
+        assert _ROLE_GATES <= _AUTHORISATION
+
+    def test_every_non_authorisation_reason_is_written_out(self):
+        for name, reason in _NOT_AUTHORISATION.items():
+            assert len(reason) >= 12, f"{name} carries no usable reason: {reason!r}"
+
+    def test_the_shape_filter_actually_matches_something(self):
+        """A filter that matches nothing would make the guard above vacuous."""
+        assert any(shape in "require_platform_admin" for shape in _AUTH_SHAPED)
+        assert not any(shape in "get_fertilizer_service" for shape in _AUTH_SHAPED)

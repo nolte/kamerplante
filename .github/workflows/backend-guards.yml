@@ -48,6 +48,18 @@ on:
   # check never reports on a change it filtered out, and GitHub treats a check
   # that never reports as satisfied — the shape `build-static-tests.yaml`
   # documents at length for the same reason.
+  #
+  # `push` and NOT `pull_request`, matching `build-static-tests.yaml`, and the
+  # consequence is stated here rather than inherited: a `push` event does not
+  # fire in this repository for a branch that lives in a FORK, so a required
+  # check triggered only by `push` never reports on a fork pull request and
+  # branch protection blocks it permanently. That is already true of
+  # `static / Static CI Tests`, so promoting a second context changes nothing
+  # about who can contribute today — this is a single-maintainer repository and
+  # every branch is local. It becomes a real cost the moment an outside
+  # contributor opens a pull request, and at that point BOTH required workflows
+  # need a `pull_request` trigger, not just this one. Written down so that
+  # discovery is a lookup and not a re-derivation.
   push:
 
 permissions:
