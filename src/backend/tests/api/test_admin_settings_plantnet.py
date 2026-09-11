@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.api.v1.admin.settings.router import router as settings_router
 from app.api.v1.recognition.router import router as recognition_router
-from app.common.auth import get_current_user
+from app.common.auth import get_current_user, require_platform_admin
 from app.common.dependencies import (
     get_identification_service,
     get_system_settings_service,
@@ -36,6 +36,10 @@ def _build_app(service: SystemSettingsService) -> FastAPI:
     app.include_router(settings_router, prefix="/api/v1")
     app.dependency_overrides[get_system_settings_service] = lambda: service
     app.dependency_overrides[get_current_user] = _fake_user
+    # #1385 moved every operation in this router behind ``require_platform_admin``.
+    # Overridden here because authorisation is not what this file measures — the
+    # gate itself is swept in ``test_admin_settings_gating.py``.
+    app.dependency_overrides[require_platform_admin] = _fake_user
     return app
 
 

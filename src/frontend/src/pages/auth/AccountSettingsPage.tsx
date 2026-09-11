@@ -160,7 +160,13 @@ export default function AccountSettingsPage() {
   // mode (REQ-027) the single user is the operator/admin; in full mode it is
   // gated on the platform-admin flag from /users/me.
   const isPlatformAdminUser = usePlatformAdmin();
-  const canManageStorage = isLightMode || isPlatformAdminUser;
+  // Installation-wide configuration: storage, weather providers, the Home
+  // Assistant connection and the Pl@ntNet key. Named for what it gates rather
+  // than for the first tab that needed it — the HA and Pl@ntNet cards were the
+  // siblings that did not get the gate, on both sides at once (#1385).
+  // In light mode (REQ-027) the sole anonymous user is the operator, which is
+  // also how ``require_platform_admin`` decides server-side.
+  const canManageInstanceSettings = isLightMode || isPlatformAdminUser;
 
   const tabs: TabDef[] = useMemo(() => {
     // The HA publish-selection tab is only relevant once the user has enabled
@@ -168,12 +174,12 @@ export default function AccountSettingsPage() {
     const haPublishTab: TabDef[] = isSmartHomeEnabled
       ? [{ key: 'ha-publish', label: t('pages.auth.tabHaPublish') }]
       : [];
-    const storageTab: TabDef[] = canManageStorage
+    const storageTab: TabDef[] = canManageInstanceSettings
       ? [{ key: 'storage', label: t('pages.auth.tabStorage') }]
       : [];
     // REQ-046 follow-up — the instance-wide weather-provider config is an
     // operator/platform-admin decision, gated exactly like the storage tab.
-    const weatherTab: TabDef[] = canManageStorage
+    const weatherTab: TabDef[] = canManageInstanceSettings
       ? [{ key: 'weather-providers', label: t('pages.auth.tabWeatherProviders') }]
       : [];
     if (isLightMode) {
@@ -217,7 +223,7 @@ export default function AccountSettingsPage() {
       { key: 'platform', label: t('pages.auth.tabPlatform') },
       { key: 'account', label: t('pages.auth.tabAccount') },
     ];
-  }, [t, isSmartHomeEnabled, canManageStorage]);
+  }, [t, isSmartHomeEnabled, canManageInstanceSettings]);
 
   const [tabIndex, setTabIndex] = useTabUrl(tabs.map((t) => t.key));
   const activeTab = tabs[tabIndex]?.key ?? 'profile';
@@ -366,11 +372,14 @@ export default function AccountSettingsPage() {
     }
   }, []);
 
+  // Only a caller who may manage instance settings can read them: since #1385
+  // ``GET /admin/settings`` answers 403 to anyone else, and firing it anyway
+  // would spend a request to fill fields that are no longer rendered.
   useEffect(() => {
-    if (activeTab === 'ha' && !haLoaded) {
+    if (activeTab === 'ha' && !haLoaded && canManageInstanceSettings) {
       loadHaSettings();
     }
-  }, [activeTab, haLoaded, loadHaSettings]);
+  }, [activeTab, haLoaded, loadHaSettings, canManageInstanceSettings]);
 
   // Determine platform-admin status when the integrations tab opens so the
   // self-hosted recognition status card (REQ-029-A) is gated correctly.
@@ -1216,8 +1225,10 @@ export default function AccountSettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Home Assistant Integration */}
-          {preferences?.smart_home_enabled && (
+          {/* Home Assistant Integration — the connection itself is installation-wide
+              (one HA per instance), so it is platform-admin only; the master toggle
+              above is a per-user preference and stays visible to everyone. */}
+          {canManageInstanceSettings && preferences?.smart_home_enabled && (
           <Card variant="outlined" sx={{ gridColumn: { xs: '1 / -1', md: '1 / 2' } }}>
             <CardContent component="fieldset" sx={{ border: 'none', p: 0, m: 0, '&:last-child': { pb: 2 }, px: 2, pt: 2 }}>
               <Typography component="legend" variant="h6" sx={{ pt: 1.5, mb: 0.5 }}>
@@ -1329,7 +1340,10 @@ export default function AccountSettingsPage() {
           </Card>
           )}
 
-          {/* Plant identification (Pl@ntNet) — instance-wide, REQ-029 Phase 1 */}
+          {/* Plant identification (Pl@ntNet) — instance-wide, REQ-029 Phase 1.
+              Platform-admin only since #1385: the key is the installation's, and
+              clearing it removes identification for every user. */}
+          {canManageInstanceSettings && (
           <Card
             variant="outlined"
             sx={{
@@ -1494,10 +1508,13 @@ export default function AccountSettingsPage() {
               </Box>
             </CardContent>
           </Card>
+          )}
 
           {/* Self-hosted DINOv2 recognition status — REQ-029-A. Visible to any
-              signed-in user like the Pl@ntNet section above; the card itself is
-              read-only and degrades to a discreet hint when the feature is off. */}
+              signed-in user, unlike the Pl@ntNet section above, which #1385 put
+              behind the platform-admin gate: this card is read-only, discloses no
+              endpoint or credential, and degrades to a discreet hint when the
+              feature is off. */}
           <RecognitionStatusCard gridColumn="1 / -1" />
           <PestRecognitionAdminCard gridColumn="1 / -1" />
           {/* REQ-010 / SEC-003 — moderate user-contributed pest photos and

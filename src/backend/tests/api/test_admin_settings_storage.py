@@ -3,7 +3,8 @@
 Covers:
   * ``PUT /admin/settings/storage`` persists only non-secret fields and returns
     the storage block directly.
-  * ``GET /admin/settings`` no longer embeds the storage block (SEC-001).
+  * ``GET /admin/settings`` does not embed the storage block (SEC-001) — kept
+    separate even though #1385 put both reads behind the same gate.
   * ``GET /admin/settings/storage`` exposes the config, platform-admin only, and
     NEVER leaks secrets.
   * ``POST /admin/settings/storage/test`` calls the adapter ``health_check`` and
@@ -80,8 +81,9 @@ def _build_app(service: SystemSettingsService) -> FastAPI:
 def test_general_get_settings_omits_storage_block():
     """SEC-001: the storage-infra block is NOT exposed via the general GET.
 
-    ``GET /admin/settings`` is reachable by any authenticated user, so it must
-    not disclose endpoint/region/bucket/KMS or credential-presence flags.
+    The separation is kept even though both reads are platform-admin only since
+    #1385: two readers of one payload are how a field ends up disclosed to the
+    wider of the two audiences, and the general GET had exactly that history.
     """
     service, _repo = _service()
     with patch("app.domain.services.system_settings_service.env_settings") as env:

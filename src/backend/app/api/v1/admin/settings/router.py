@@ -17,7 +17,7 @@ from app.api.v1.admin.settings.schemas import (
     StorageTestResponse,
     SystemSettingsResponse,
 )
-from app.common.auth import get_current_user, require_platform_admin
+from app.common.auth import require_platform_admin
 from app.common.dependencies import get_ha_client, get_system_settings_service
 from app.common.exceptions import ValidationError
 from app.common.openapi_responses import AUTH_RESPONSES
@@ -29,6 +29,22 @@ from app.domain.services.system_settings_service import SystemSettingsService
 
 logger = structlog.get_logger()
 
+# Every operation in this router reads or changes INSTALLATION-WIDE configuration
+# and is therefore gated by ``require_platform_admin`` (#1385). Until then the
+# storage half carried the gate and the Home-Assistant / plant-identification half
+# resolved its caller through ``get_current_user``, so any authenticated member of
+# any tenant could read the installation's HA URL, replace its URL and token, and
+# clear the plant-identification provider for everyone — the #948 class, a guard
+# opted into at the call site and not opted into by the siblings.
+#
+# NOT ``require_admin_scope(AdminScope.TECHNICAL)``, which REQ-049 §2.4 puts on the
+# orthogonal administrative axis: that dependency resolves a ``TenantContext``
+# through ``get_current_tenant`` and is therefore tenant-bound. These paths carry
+# no tenant, so gating them that way needs a tenant resolution invented for the
+# purpose. ``admin/platform``, the sibling router, uses ``require_platform_admin``.
+#
+# A new endpoint here inherits nothing automatically. ``tests/api/test_admin_settings_gating.py``
+# sweeps the list it declares; add the route there in the same change.
 router = APIRouter(prefix="/admin/settings", tags=["admin-settings"], responses=AUTH_RESPONSES)
 
 
@@ -79,10 +95,15 @@ def _build_response(service: SystemSettingsService) -> SystemSettingsResponse:
 
 @router.get("", response_model=SystemSettingsResponse)
 def get_settings(
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
-    """Return the effective system settings (Home Assistant + plant identification)."""
+    """Return the effective installation settings — platform-admin only (#1385).
+
+    The HA token and the Pl@ntNet key are masked here and always were; the HA
+    **URL** is not, and it is an internal address in most installations. That is
+    the disclosure this gate closes, alongside the write operations below.
+    """
     return _build_response(service)
 
 
@@ -94,10 +115,11 @@ def get_storage_settings(
     """Return the storage-infra config — platform-admin only (SEC-001).
 
     The storage block (endpoint, region, bucket, KMS key, credential-presence
-    flags) is infrastructure disclosure and is therefore NOT part of the general
-    ``GET /admin/settings`` available to any authenticated user. This dedicated
-    endpoint is gated by ``require_platform_admin`` (the same gate as the storage
-    write/test/delete endpoints, light-mode-aware).
+    flags) is infrastructure disclosure and is therefore kept out of the general
+    ``GET /admin/settings`` payload rather than merely behind the same gate. Both
+    are platform-admin only since #1385; the separation predates that and still
+    holds, because two readers of one payload are how a field ends up disclosed
+    to the wider of the two audiences.
     """
     return _build_storage_response(service)
 
@@ -105,7 +127,7 @@ def get_storage_settings(
 @router.put("/home-assistant", response_model=SystemSettingsResponse)
 def update_ha_settings(
     body: HASettingsUpdate,
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
     """Update the Home Assistant connection settings."""
@@ -121,7 +143,7 @@ def update_ha_settings(
 @router.post("/home-assistant/test", response_model=HATestResponse)
 def test_ha_connection(
     body: HATestRequest,
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
     """Test HA connection using provided values or effective settings."""
@@ -164,7 +186,7 @@ def test_ha_connection(
 
 @router.delete("/home-assistant", status_code=204)
 def delete_ha_settings(
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
     """Remove the stored Home Assistant settings, falling back to env values."""
@@ -182,7 +204,7 @@ def delete_ha_settings(
 @router.put("/plant-identification", response_model=SystemSettingsResponse)
 def update_plant_identification_settings(
     body: PlantIdentificationSettingsUpdate,
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
     """Set the instance-wide Pl@ntNet API key (DB overrides the env value)."""
@@ -193,7 +215,7 @@ def update_plant_identification_settings(
 @router.post("/plant-identification/test", response_model=PlantIdentificationTestResponse)
 def test_plant_identification(
     body: PlantIdentificationTestRequest,
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
     """Validate a Pl@ntNet key against the API (provided value or effective key)."""
@@ -240,7 +262,7 @@ def test_plant_identification(
 
 @router.delete("/plant-identification", status_code=204)
 def delete_plant_identification_settings(
-    _current_user: User = Depends(get_current_user),
+    _current_user: User = Depends(require_platform_admin),
     service: SystemSettingsService = Depends(get_system_settings_service),
 ):
     """Remove the DB Pl@ntNet key so resolution falls back to the env value."""
