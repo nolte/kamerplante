@@ -14,18 +14,30 @@ from app.api.v1.admin.recognition.schemas import (
     RecognitionConfig,
     RecognitionStatusResponse,
 )
-from app.common.auth import get_current_user
+from app.common.auth import require_platform_admin
 from app.common.dependencies import get_reference_image_repo, get_species_repo
 from app.common.openapi_responses import UNAUTHORIZED_RESPONSE
 from app.config.settings import settings
 from app.data_access.external.inference_service_client import InferenceServiceClient
 from app.domain.models.user import User
 
+# Both operations are platform-admin only (#1401), matching the ``admin/pests``
+# sibling mounted three lines below this one in ``api/v1/router.py``, which gates
+# its identical ``/status`` and ``/acquire`` the same way.
+#
+# They did not, and the route docstring argued the exception: "get_current_user-gated
+# and available in light + full mode, so the 'start acquisition' button in the
+# settings card works in both". That is a reason to make the **card** reachable, not
+# the **route** open — and ``require_platform_admin`` already treats the sole
+# anonymous light-mode user as the operator (REQ-027), so the button works in both
+# modes with the gate on. Meanwhile any member of any tenant could dispatch an
+# installation-wide acquisition run over every species, repeatedly, and read the
+# inference service's internal URL from ``/status``.
 router = APIRouter(prefix="/admin/recognition", tags=["admin-recognition"], responses=UNAUTHORIZED_RESPONSE)
 
 
 @router.get("/status", response_model=RecognitionStatusResponse)
-def get_recognition_status(_user: User = Depends(get_current_user)) -> RecognitionStatusResponse:
+def get_recognition_status(_user: User = Depends(require_platform_admin)) -> RecognitionStatusResponse:
     """Aggregated status of the self-hosted DINOv2 recognition feature."""
     client = InferenceServiceClient(settings.inference_service_url)
     ready = client.is_ready() if settings.inference_service_enabled else False
@@ -73,12 +85,19 @@ def get_recognition_status(_user: User = Depends(get_current_user)) -> Recogniti
 
 
 @router.post("/acquire", response_model=AcquisitionStartResponse, status_code=202)
-def start_acquisition(_user: User = Depends(get_current_user)) -> AcquisitionStartResponse:
+def start_acquisition(_user: User = Depends(require_platform_admin)) -> AcquisitionStartResponse:
     """Dispatch a reference-image acquisition run for all species (from the UI).
 
     UI-facing counterpart to the platform-admin ``/admin/reference-images/acquire``
-    endpoint: get_current_user-gated and available in light + full mode, so the
-    "start acquisition" button in the settings card works in both.
+    endpoint, available in light + full mode so the "start acquisition" button in
+    the settings card works in both.
+
+    This docstring used to add "get_current_user-gated" and offer that as the
+    reason. It was the whole justification for the exception, and it does not
+    survive reading: the button needing to work is an argument about the card, and
+    ``require_platform_admin`` admits the sole anonymous light-mode operator
+    anyway (REQ-027). What it actually bought was any member of any tenant being
+    able to start an installation-wide run over every species, on repeat (#1401).
     """
     from app.tasks.reference_image_tasks import acquire_all_reference_images_task
 
