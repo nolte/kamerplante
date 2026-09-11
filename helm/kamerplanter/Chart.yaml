@@ -30,7 +30,7 @@ dependencies:
     version: 5.1.0
   - name: valkey
     repository: oci://ghcr.io/valkey-io/valkey-helm
-    version: 0.10.0
+    version: 0.12.0
     condition: valkey.enabled
   - name: ollama
     repository: https://otwld.github.io/ollama-helm/
