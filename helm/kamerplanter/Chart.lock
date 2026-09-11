@@ -4,9 +4,9 @@ dependencies:
   version: 5.1.0
 - name: valkey
   repository: oci://ghcr.io/valkey-io/valkey-helm
-  version: 0.10.0
+  version: 0.12.0
 - name: ollama
   repository: https://otwld.github.io/ollama-helm/
   version: 1.80.0
-digest: sha256:5439f8aac71f56aacb56ad284a847d2f5ec4fc95c6609299deb114cae4044b5e
-generated: "2026-09-10T21:24:26.604996325Z"
+digest: sha256:870ba24d1791c4fa7eece3d7a7b8e01e801d94cbbc3b123fd992bd2b758b1160
+generated: "2026-09-11T05:36:32.269048543Z"
