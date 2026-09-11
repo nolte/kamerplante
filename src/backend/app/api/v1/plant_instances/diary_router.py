@@ -189,7 +189,7 @@ def delete_plant_diary_entry(
 def request_plant_diary_entry_analysis(
     key: Annotated[str, Path(description="Document key of the plant instance.")],
     entry_key: Annotated[str, Path(description="Document key of the diary entry.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("diary-entry", Action.CREATE)),
     plant_service: PlantInstanceService = Depends(get_plant_instance_service),
     diary_service: PlantDiaryService = Depends(get_plant_diary_service),
 ):
@@ -216,7 +216,7 @@ def request_plant_diary_entry_analysis(
 def cancel_plant_diary_entry_analysis(
     key: Annotated[str, Path(description="Document key of the plant instance.")],
     entry_key: Annotated[str, Path(description="Document key of the diary entry.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("diary-entry", Action.UPDATE)),
     plant_service: PlantInstanceService = Depends(get_plant_instance_service),
     diary_service: PlantDiaryService = Depends(get_plant_diary_service),
 ):

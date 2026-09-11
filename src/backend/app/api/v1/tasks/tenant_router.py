@@ -613,7 +613,7 @@ def update_task(
 @router.post("/{key}/start", response_model=TaskResponse)
 def start_task(
     key: Annotated[str, Path(description="Document key of the task.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission(ResourceType.TASK, Action.UPDATE)),
     service: TaskService = Depends(get_task_service),
 ):
     """Mark a task as started."""
@@ -624,7 +624,7 @@ def start_task(
 def complete_task(
     key: Annotated[str, Path(description="Document key of the task.")],
     body: TaskCompleteRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission(ResourceType.TASK, Action.UPDATE)),
     service: TaskService = Depends(get_task_service),
 ):
     """Complete a task, propagating care-reminder confirmations where applicable."""
@@ -652,7 +652,7 @@ def complete_task(
 @router.post("/{key}/skip", response_model=TaskResponse)
 def skip_task(
     key: Annotated[str, Path(description="Document key of the task.")],
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission(ResourceType.TASK, Action.UPDATE)),
     service: TaskService = Depends(get_task_service),
 ):
     """Skip a task, propagating care-reminder confirmations where applicable."""
@@ -691,7 +691,7 @@ def clone_task(
 def reopen_task(
     key: Annotated[str, Path(description="Document key of the task to reopen.")],
     body: TaskReopenRequest | None = None,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission(ResourceType.TASK, Action.UPDATE)),
     service: TaskService = Depends(get_task_service),
 ):
     """Reopen a completed or skipped task."""

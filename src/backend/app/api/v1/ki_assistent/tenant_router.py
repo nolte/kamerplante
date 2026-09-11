@@ -25,8 +25,9 @@ from app.api.v1.ki_assistent.schemas import (
     TipCardSchema,
     TipListResponse,
 )
-from app.common.auth import get_current_tenant
+from app.common.auth import get_current_tenant, require_tenant_role
 from app.common.dependencies import get_ai_assistant_service
+from app.common.enums import TenantRole
 from app.common.openapi_responses import NOT_FOUND_RESPONSE
 from app.domain.models.ai_assistant import AiResponse, AiTenantSettings, AiTipCard
 from app.domain.models.tenant_context import TenantContext
@@ -106,7 +107,7 @@ def refresh_tips(
     context_type: str = Query(..., description="Context entity type the tips relate to (e.g. plant, location)."),
     context_key: str = Query(..., description="Document key of the context entity."),
     language: str = Query("de", description="Preferred answer language (ISO 639-1)."),
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     ai_settings: AiTenantSettings = Depends(require_ai_tenant_enabled),
     service: AiAssistantService = Depends(get_ai_assistant_service),
 ) -> TipListResponse:
@@ -172,7 +173,7 @@ def dismiss_daily_tip(
 @router.post("/explain", response_model=AiResponseSchema)
 def explain(
     body: ExplainRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     ai_settings: AiTenantSettings = Depends(require_ai_tenant_enabled),
     service: AiAssistantService = Depends(get_ai_assistant_service),
 ) -> AiResponseSchema:
@@ -237,7 +238,7 @@ def create_conversation(
 async def send_message(
     conversation_key: Annotated[str, Path(description="Document key of the conversation.")],
     body: ChatMessageRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     ai_settings: AiTenantSettings = Depends(require_ai_tenant_enabled),
     service: AiAssistantService = Depends(get_ai_assistant_service),
 ) -> StreamingResponse:

@@ -17,6 +17,14 @@ These tests assert the DEPENDENCY, not a live HTTP round trip, for the reason
 default, and what goes wrong is a route carrying the wrong one. The companion
 class then drives the resolved dependency with a viewer context, so a hollowed-out
 ``require_tenant_role`` cannot leave these green — the "wired but inert" failure.
+
+Since #1353 the **enumeration** half of this file is no longer load-bearing:
+`tests/unit/api/test_write_route_gates.py` sweeps every mounted write route in
+the repository, so a sixth write route added here with a copied
+`Depends(get_current_tenant)` goes red there whether or not anyone remembers to
+extend `_ROUTES`. What this file still carries, and the sweep does not, is the
+behavioural half — driving the resolved dependency with a viewer context, which
+is what distinguishes a wired gate from an inert one. It is kept for that.
 """
 
 from __future__ import annotations

@@ -213,7 +213,7 @@ def get_location_watering_stats(
 @router.post("/watering-logs/confirm", response_model=WateringConfirmResponse, status_code=201)
 def confirm_watering(
     body: WateringConfirmRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("watering-log", Action.UPDATE)),
     service: WateringLogService = Depends(get_watering_log_service),
 ):
     """Confirm a scheduled watering task, creating the resulting log."""
@@ -232,7 +232,7 @@ def confirm_watering(
 @router.post("/watering-logs/quick-confirm", response_model=WateringConfirmResponse, status_code=201)
 def quick_confirm_watering(
     body: WateringQuickConfirmRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_permission("watering-log", Action.UPDATE)),
     service: WateringLogService = Depends(get_watering_log_service),
 ):
     """Quick-confirm a scheduled watering task with default values."""

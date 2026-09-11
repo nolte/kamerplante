@@ -104,6 +104,19 @@ export const ROLE_GUARDED_ROUTES: Readonly<Record<string, RoleGuardedRoute>> = {
  * parametrised test and the static check all follow automatically.
  */
 export const ACTION_GATED_ROUTES: readonly string[] = [
+  // #1353 moved these three out of UNGATED_ROUTES. Their reason there was "pages
+  // that call nothing", and that was true only because the operations they call
+  // were themselves ungated: `POST /diagnosis/analyze`, the three KI-Assistent
+  // generation calls and the diary analysis request all resolved `ctx` through
+  // bare `get_current_tenant`. Gating them turned the reason false, so the entry
+  // moved with the gate rather than being left to rot.
+  //
+  // ACTION_GATED rather than ROLE_GUARDED: all three stay readable for a viewer
+  // — the diagnosis form, the tip list, the diary — and only the write
+  // affordance is refused.
+  'ki-assistent',
+  'diagnose',
+  'tagebuch',
   'settings',
   'tenants/settings',
   'ueberwinterung/profile',
@@ -199,11 +212,8 @@ export const UNGATED_ROUTES: readonly string[] = [
   'standorte/substrates/:key',
   'standorte/substrates/batches/:key',
   'pflanzen/calculations',
-  'ki-assistent',
   'glossar',
-  'diagnose',
   'duengung/calculations',
-  'tagebuch',
   'pflanzenschutz/diseases',
   'pflanzenschutz/treatments',
   'pflanzenschutz/treatments/:key',

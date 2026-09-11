@@ -20,8 +20,9 @@ from app.api.v1.diagnose.schemas import (
     SymptomListResponse,
     SymptomSchema,
 )
-from app.common.auth import get_current_tenant
+from app.common.auth import require_tenant_role
 from app.common.dependencies import get_diagnose_service
+from app.common.enums import TenantRole
 from app.common.openapi_responses import NOT_FOUND_RESPONSE
 from app.domain.models.ai_assistant import AiTenantSettings
 from app.domain.models.diagnosis import DiagnosisCandidate, DiagnosisResult, SymptomCatalogEntry
@@ -97,7 +98,7 @@ def list_symptoms(
 @router.post("/analyze", response_model=DiagnosisResultSchema)
 async def analyze(
     body: DiagnoseRequest,
-    ctx: TenantContext = Depends(get_current_tenant),
+    ctx: TenantContext = Depends(require_tenant_role(TenantRole.GROWER)),
     ai_settings: AiTenantSettings = Depends(require_ai_tenant_enabled),
     service: DiagnoseService = Depends(get_diagnose_service),
 ) -> DiagnosisResultSchema:
