@@ -20,6 +20,10 @@ const OAUTH_ERROR_KEYS: Record<string, string> = {
   invalid_state: 'pages.auth.oauthErrors.invalidState',
   provider_error: 'pages.auth.oauthErrors.providerError',
   account_disabled: 'pages.auth.oauthErrors.accountDisabled',
+  // #1403: the address matches a local account and one side is unverified. Its
+  // own key because the generic `providerError` is wrong in both halves here —
+  // the provider reported nothing wrong, and "try again later" cannot help.
+  link_requires_password: 'pages.auth.oauthErrors.linkRequiresPassword',
 };
 
 /**

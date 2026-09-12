@@ -102,10 +102,43 @@ class ArangoUserRepository(BaseArangoRepository[User], IUserRepository):
         return next(cursor, 0)
 
     def get_unverified_before(self, cutoff_iso: str) -> list[User]:
+        """Abandoned half-registrations, for `cleanup_unverified_accounts` to purge.
+
+        **An account with a linked federated provider is excluded, and that
+        exclusion is load-bearing rather than tidy.** The task this feeds
+        HARD-DELETES what it returns, and `delete` deliberately does not remove
+        memberships — the account-deletion cascade does that before calling it.
+        So a row returned here in error costs the user their account, their
+        personal tenant, and leaves the tenant and its plant data orphaned.
+
+        The predicate used to be `email_verified == false` alone. That was
+        survivable only because nothing ever created a federated account in that
+        state: `_register_oauth_user` stamped `email_verified=True`
+        unconditionally. #1403 made it read the provider's claim instead, which is
+        correct — and a provider that omits `email_verified` (GitHub without the
+        `user:email` scope, and many OIDC deployments) then produces exactly such
+        a row. The reaper would have deleted a working account 72 hours after its
+        owner signed in with it.
+
+        The distinction the task actually wants is "can this person still get in?",
+        not "did they confirm an address". Someone who signs in through a provider
+        can, today and every day after, so they are not an abandoned registration
+        whatever `email_verified` says.
+        """
         query = """
         FOR doc IN @@collection
           FILTER doc.email_verified == false AND doc.created_at < @cutoff
+          LET linked = LENGTH(
+            FOR provider IN @@providers
+              FILTER provider.user_key == doc._key
+              LIMIT 1
+              RETURN 1
+          )
+          FILTER linked == 0
           RETURN doc
         """
-        cursor = self._db.aql.execute(query, bind_vars={"@collection": col.USERS, "cutoff": cutoff_iso})
+        cursor = self._db.aql.execute(
+            query,
+            bind_vars={"@collection": col.USERS, "@providers": col.AUTH_PROVIDERS, "cutoff": cutoff_iso},
+        )
         return [User(**self._from_doc(doc)) for doc in cursor]

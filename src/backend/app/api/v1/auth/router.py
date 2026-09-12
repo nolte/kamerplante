@@ -34,6 +34,7 @@ from app.common.dependencies import get_auth_service, get_mcp_authenticator, get
 from app.common.exceptions import (
     InvalidTokenError,
     NotFoundError,
+    OAuthAutoLinkRefusedError,
     UnauthorizedError,
     ValidationError,
 )
@@ -112,7 +113,10 @@ _QR_PAYLOAD_VERSION = 1
 # AP-7 (FE-S3): the frontend maps these codes to localised messages. The backend
 # NEVER forwards a raw provider error string — only one of these fixed codes.
 _OAUTH_ERROR_CODES = frozenset(
-    {"access_denied", "invalid_state", "provider_error", "account_disabled"},
+    # `link_requires_password` is its own code rather than a flavour of
+    # `provider_error` (#1403): the provider reported nothing wrong and retrying
+    # cannot help, which is exactly what the generic message tells the user to do.
+    {"access_denied", "invalid_state", "provider_error", "account_disabled", "link_requires_password"},
 )
 
 
@@ -489,6 +493,14 @@ def oauth_callback(
         return _oauth_error_redirect(frontend_url, "invalid_state")
     except UnauthorizedError:
         return _oauth_error_redirect(frontend_url, "account_disabled")
+    except OAuthAutoLinkRefusedError as exc:
+        # Before its own code, this fell into the branch below and answered
+        # `provider_error`. Since #1403 refuses the link whenever the provider
+        # omits `email_verified` — the default for a GitHub provider without the
+        # `user:email` scope — that would have been an ordinary path answering
+        # with a message that is wrong in both halves.
+        logger.info("oauth_callback_link_requires_password", provider=slug, error=str(exc))
+        return _oauth_error_redirect(frontend_url, "link_requires_password")
     except (NotFoundError, ValidationError) as exc:
         # `as exc` keeps ruff-format from stripping the parens (which would turn
         # this into the `except A, B:` Python-2 syntax error).

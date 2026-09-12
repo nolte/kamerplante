@@ -13,6 +13,7 @@ from app.common.exceptions import (
     EmailNotVerifiedError,
     InvalidTokenError,
     NotFoundError,
+    OAuthAutoLinkRefusedError,
     UnauthorizedError,
     ValidationError,
 )
@@ -789,14 +790,33 @@ class AuthService:
             # No link — check if email matches existing user (auto-link)
             existing_user = self._user_repo.get_by_email(oauth_user.email)
             if existing_user:
-                if self._oauth_engine.should_auto_link(existing_user.email_verified, True):
+                # The provider's own claim, not a literal (#1403). `None` — the
+                # provider said nothing — refuses, by the operator decision
+                # recorded on `should_auto_link`.
+                if self._oauth_engine.should_auto_link(existing_user.email_verified, oauth_user.email_verified):
                     user = existing_user
                     # Create provider link
                     self._create_oauth_provider(user.key or "", oauth_user, token_response)
                 else:
-                    raise ValidationError(
-                        "An account with this email exists but is not verified. "
-                        "Verify your email first or log in with your password.",
+                    # Deliberately does not say WHICH side is unverified: the
+                    # caller of this endpoint is not necessarily the owner of the
+                    # local account, and "that address exists here and is
+                    # verified" is an account-enumeration answer. The remedy is
+                    # the same either way.
+                    # Deliberately does not say WHICH side is unverified: the
+                    # caller of this endpoint is not necessarily the owner of the
+                    # local account, and "that address exists here and is
+                    # verified" is an account-enumeration answer.
+                    #
+                    # And deliberately does not advise linking from the account
+                    # settings, which the earlier wording did: the frontend has no
+                    # such control. `api/endpoints/auth.ts` exports `unlinkProvider`
+                    # and nothing that calls `POST /users/me/providers/{slug}`, so
+                    # that route has no consumer at all. Advice a reader cannot
+                    # follow is worse than none — it sends them looking for a
+                    # button that is not there.
+                    raise OAuthAutoLinkRefusedError(
+                        "This email cannot be linked automatically. Sign in with your password instead.",
                     )
             else:
                 # New user — register via OAuth
@@ -863,12 +883,29 @@ class AuthService:
         )
 
     def _register_oauth_user(self, oauth_user: OAuthUserInfo) -> User:
-        """Create a new user from OAuth info (no password)."""
+        """Create a new user from OAuth info (no password).
+
+        **The provider's claim decides `email_verified`, not a literal (#1403).**
+        This line read `email_verified=True  # OAuth emails are considered
+        verified` — the same assumption the auto-link path was repaired for, one
+        branch over, and the one the AST guard does not watch because it only
+        follows `should_auto_link`.
+
+        It matters because the two are connected: an account created here with
+        `email_verified=True` from an address the provider never asserted then
+        satisfies `existing_email_verified` for **every subsequent provider**.
+        Refusing the auto-link while minting accounts that make the next one
+        succeed would have fixed the symptom and kept the mechanism.
+
+        `is True` and not a truthiness test: `None` means the provider said
+        nothing, and under the decision recorded on `should_auto_link` silence is
+        not an assertion.
+        """
 
         user = User(
             email=oauth_user.email,
             display_name=oauth_user.display_name,
-            email_verified=True,  # OAuth emails are considered verified
+            email_verified=oauth_user.email_verified is True,
             avatar_url=oauth_user.avatar_url,
         )
         created = self._user_repo.create(user)
