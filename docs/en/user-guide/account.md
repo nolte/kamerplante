@@ -69,10 +69,10 @@ If your administrator has configured external sign-in providers, additional butt
 2. Sign in with the provider and confirm access
 3. You are redirected back to Kamerplanter and signed in
 
-If a local account with the same email address already exists, the provider is linked to it automatically only when **both sides** report the address as confirmed: your local account and the provider. If sign-in fails, you land back on the sign-in page with an error message and can try again or sign in with email and password instead.
+Kamerplanter links the provider to an existing local account only when **both sides** confirm the email address: your local account and the provider. If sign-in fails, you land back on the sign-in page with an error message. Try again, or sign in with email and password instead.
 
 !!! info "When the provider says nothing about the address"
-    Some providers send no indication of whether an email address is confirmed. Kamerplanter does **not** read that silence as confirmation and will not link automatically. Sign in with email and password instead, then link the provider from your account settings — the outcome is the same, only the route differs.
+    Some providers never say whether they have confirmed an email address. Kamerplanter treats that silence as "unconfirmed" and skips the automatic link. Sign in with email and password, then link the provider in your account settings. You end up in the same place, by a different route.
 
 !!! note "Alternative sign-in options not showing?"
     If the list of external providers fails to load, the sign-in page shows a message. You can still sign in with email and password in this case.
