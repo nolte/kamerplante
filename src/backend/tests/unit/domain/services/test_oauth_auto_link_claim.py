@@ -282,3 +282,64 @@ class TestTheRegistrationPathAlsoReadsTheClaim:
             f"provider claim {claim!r} produced email_verified={created.email_verified!r}; "
             "a literal True here re-arms the auto-link for the next provider"
         )
+
+
+class TestTheRefusalReachesTheUser:
+    """A message the browser never shows is not an explanation (#1403).
+
+    `complete_oauth` raised a plain `ValidationError`, and
+    `auth/router.py:_oauth_error_redirect` forwards only whitelisted CODES — never
+    a message — so the carefully worded refusal collapsed into `provider_error`:
+    "The provider reported an error. Please try again later." Wrong in both
+    halves. The provider reported nothing wrong, and retrying cannot help.
+
+    That mattered little while the refusal was rare. Since the claim is read, a
+    provider that omits `email_verified` refuses every auto-link, and omitting it
+    is the DEFAULT for a GitHub provider registered without `user:email` — so
+    this is an ordinary path now.
+    """
+
+    def test_the_refusal_carries_its_own_type(self):
+        from app.common.exceptions import OAuthAutoLinkRefusedError, ValidationError
+
+        service, _ = _service(_oauth_user(None))
+
+        with pytest.raises(OAuthAutoLinkRefusedError) as caught:
+            service.complete_oauth("acme", "code", "state")
+
+        # Still a ValidationError, so every existing handler keeps catching it.
+        assert isinstance(caught.value, ValidationError)
+
+    def test_the_router_answers_with_a_code_the_frontend_can_explain(self):
+        """Both ends of the wire, because a code nobody maps is the same dead end."""
+        import json
+        import pathlib
+
+        router = pathlib.Path(__file__).resolve().parents[4] / "app" / "api" / "v1" / "auth" / "router.py"
+        assert '"link_requires_password"' in router.read_text(encoding="utf-8"), (
+            "the code is not in the router's whitelist, so _oauth_error_redirect downgrades it"
+        )
+
+        frontend = pathlib.Path(__file__).resolve().parents[5] / "frontend" / "src"
+        page = (frontend / "pages" / "auth" / "OAuthCallbackPage.tsx").read_text(encoding="utf-8")
+        assert "link_requires_password" in page, "the frontend maps unknown codes to the generic message"
+
+        for locale in ("de", "en"):
+            messages = json.loads((frontend / "i18n" / "locales" / locale / "pages.json").read_text(encoding="utf-8"))
+            assert "linkRequiresPassword" in messages["pages"]["auth"]["oauthErrors"], (
+                f"the {locale} bundle has no string for the code, so the page renders the key"
+            )
+
+    def test_the_message_does_not_advise_something_the_ui_cannot_do(self):
+        """The earlier wording sent the reader to a control that does not exist.
+
+        `api/endpoints/auth.ts` exports `unlinkProvider` and nothing that calls
+        `POST /users/me/providers/{slug}`; that route has no consumer at all. Advice
+        a reader cannot follow is worse than none.
+        """
+        service, _ = _service(_oauth_user(False))
+
+        with pytest.raises(Exception) as caught:  # noqa: B017 - the type is asserted above
+            service.complete_oauth("acme", "code", "state")
+
+        assert "account settings" not in str(caught.value).lower()

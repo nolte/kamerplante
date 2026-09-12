@@ -853,7 +853,8 @@
         "providerError": "Der Anbieter hat einen Fehler gemeldet. Bitte versuche es später erneut.",
         "accountDisabled": "Dieses Konto ist deaktiviert.",
         "sessionFailed": "Die Anmeldung konnte nicht abgeschlossen werden. Bitte melde dich erneut an.",
-        "generic": "Bei der Anmeldung ist ein Fehler aufgetreten."
+        "generic": "Bei der Anmeldung ist ein Fehler aufgetreten.",
+        "linkRequiresPassword": "Diese E-Mail-Adresse gehört bereits zu einem Konto hier und lässt sich nicht automatisch verknüpfen. Melde dich stattdessen mit E-Mail und Passwort an."
       },
       "profileSection": "Persönliche Daten",
       "profileSectionDesc": "Anzeigename und E-Mail-Adresse deines Kontos.",

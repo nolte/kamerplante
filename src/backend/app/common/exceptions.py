@@ -136,6 +136,22 @@ class ValidationError(KamerplanterError):
         )
 
 
+class OAuthAutoLinkRefusedError(ValidationError):
+    """The OAuth address matches a local account, and one side is unverified (#1403).
+
+    A `ValidationError` subclass so existing handlers keep catching it, but its own
+    type so the OAuth callback can answer with a code the frontend can explain.
+    Without it the case collapses into the generic `provider_error` — "The provider
+    reported an error. Please try again later." — which is wrong in both halves:
+    the provider reported nothing wrong, and trying again cannot help.
+
+    That matters more since #1403 than before it. A provider that omits
+    `email_verified` now refuses the auto-link, and omitting it is the DEFAULT for
+    a GitHub provider registered without the `user:email` scope, so this is an
+    ordinary path rather than a corner.
+    """
+
+
 class WinterPathViolationError(KamerplanterError):
     """REQ-022 §D5 — ``OverwinteringProfile.winter_action`` contradicts the
     hardiness-derived winter path (in-situ path A vs. relocated path B)."""

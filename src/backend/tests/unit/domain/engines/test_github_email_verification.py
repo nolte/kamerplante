@@ -140,6 +140,22 @@ class TestAVerificationGapNeverBreaksSignIn:
         assert info.email == "octo@example.org", f"sign-in broke on {what}"
         assert info.email_verified is None
 
+    def test_a_mixed_list_keeps_the_claim_it_can_read(self):
+        """The `isinstance(entry, dict)` filter, and the only case that needs it.
+
+        Every other malformed shape above is caught by the widened `except` and
+        answers `None` either way, so removing the shape check and the filter
+        leaves all those tests green — measured. This is the one input where the
+        filter changes the outcome: a list carrying the caller's address *and*
+        junk. Without it the junk entry raises and the claim is thrown away with
+        it, turning a readable verification into a refused auto-link.
+        """
+        info = _extract(
+            {**PROFILE, "email": "octo@example.org"},
+            ["junk", {"email": "octo@example.org", "verified": True}, None],
+        )
+        assert info.email_verified is True
+
     def test_a_403_degrades_to_no_claim(self):
         """The default provider scopes do not include `user:email`, so this is
         not hypothetical: `OidcProviderConfig.scopes` defaults to

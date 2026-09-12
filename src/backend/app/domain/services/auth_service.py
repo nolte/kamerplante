@@ -13,6 +13,7 @@ from app.common.exceptions import (
     EmailNotVerifiedError,
     InvalidTokenError,
     NotFoundError,
+    OAuthAutoLinkRefusedError,
     UnauthorizedError,
     ValidationError,
 )
@@ -802,10 +803,20 @@ class AuthService:
                     # local account, and "that address exists here and is
                     # verified" is an account-enumeration answer. The remedy is
                     # the same either way.
-                    raise ValidationError(
-                        "This email cannot be linked automatically. "
-                        "Log in with your password and link the provider from your account settings, "
-                        "or verify your email address first.",
+                    # Deliberately does not say WHICH side is unverified: the
+                    # caller of this endpoint is not necessarily the owner of the
+                    # local account, and "that address exists here and is
+                    # verified" is an account-enumeration answer.
+                    #
+                    # And deliberately does not advise linking from the account
+                    # settings, which the earlier wording did: the frontend has no
+                    # such control. `api/endpoints/auth.ts` exports `unlinkProvider`
+                    # and nothing that calls `POST /users/me/providers/{slug}`, so
+                    # that route has no consumer at all. Advice a reader cannot
+                    # follow is worse than none — it sends them looking for a
+                    # button that is not there.
+                    raise OAuthAutoLinkRefusedError(
+                        "This email cannot be linked automatically. Sign in with your password instead.",
                     )
             else:
                 # New user — register via OAuth

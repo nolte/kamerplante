@@ -72,7 +72,7 @@ Wenn dein Administrator externe Anmeldeanbieter eingerichtet hat, erscheinen unt
 Kamerplanter verknüpft den Anbieter mit einem bestehenden lokalen Konto nur dann, wenn **beide Seiten** die E-Mail-Adresse bestätigt haben: dein lokales Konto und der Anbieter. Schlägt die Anmeldung fehl, landest du mit einer Fehlermeldung zurück auf der Anmeldeseite. Versuche es erneut oder melde dich stattdessen mit E-Mail und Passwort an.
 
 !!! info "Wenn der Anbieter nichts über die Adresse sagt"
-    Manche Anbieter geben gar nicht an, ob eine E-Mail-Adresse bestätigt ist. Kamerplanter wertet dieses Schweigen als „nicht bestätigt" und verknüpft nicht automatisch. Melde dich mit E-Mail und Passwort an und verknüpfe den Anbieter danach in den Kontoeinstellungen. Du kommst am selben Ort an, nur auf einem anderen Weg.
+    Manche Anbieter geben gar nicht an, ob eine E-Mail-Adresse bestätigt ist. Kamerplanter wertet dieses Schweigen als „nicht bestätigt" und verknüpft nicht automatisch. Melde dich stattdessen mit E-Mail und Passwort an — die Anmeldeseite sagt dir in diesem Fall auch, warum.
 
 !!! note "Alternative Anmeldeoptionen nicht sichtbar?"
     Falls die Liste der externen Anbieter nicht geladen werden kann, zeigt die Anmeldeseite einen Hinweis. Du kannst dich in diesem Fall weiterhin mit E-Mail und Passwort anmelden.
