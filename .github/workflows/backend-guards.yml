@@ -1,0 +1,113 @@
+name: Backend Guards
+
+# WHY THIS IS A SEPARATE WORKFLOW AND NOT A JOB IN `backend.yml` (#1404).
+#
+# #1404 asks for "a job in `.github/workflows/backend.yml` … with no `paths:`
+# filter". That job cannot exist: `on:` is a WORKFLOW-level key, and a job
+# cannot widen the triggers of the workflow that contains it. `backend.yml` is
+# path-filtered to `src/backend/**` and a handful of scripts, so a job added
+# there would not run at all for a change outside those paths — which is exactly
+# the case the promotion exists to cover (a frontend-only pull request that also
+# adds an ungated backend write route). The filter is the defect; a new file is
+# the only way to drop it.
+#
+# WHAT RUNS HERE, AND WHY IT IS A DIRECTORY AND NOT A LIST.
+#
+# `src/backend/tests/unit/api/` — every write-route gate sweep lives there
+# (`test_write_route_gates.py`, `test_recognition_write_gates.py`,
+# `test_pest_detection_write_gates.py`,
+# `test_generate_care_reminders_tenant_scope.py`). A hand-maintained list of
+# test files would be an OPT-IN LIST, which is the defect class this lane exists
+# to make blockable: a new gate test added outside the list is silently
+# unenforced, exactly as a new seed file outside a `check-jsonschema` hook is
+# silently unchecked (#1406) and a new write route outside the sweep's selectors
+# is silently ungated (#1402). A directory is enumerated by the runner, so a new
+# guard test placed beside its siblings is picked up without anyone remembering.
+#
+# WHY NOT THE WHOLE UNIT SUITE. Measured 2026-09-12 on this tree:
+#
+#   tests/unit/api/          271 tests    15 s
+#   tests/unit                8345 tests   240 s
+#
+# `strict: true` on `develop` invalidates every open pull request's green after
+# any other merges, so a required check's runtime is paid once per pull request
+# per merge, not once per pull request. Four minutes does not fit that; fifteen
+# seconds does. The expensive full suite stays in `backend.yml`, path-filtered
+# and advisory.
+#
+# THE MODE IS SET EXPLICITLY. `test_write_route_gates.py:225` asserts
+# `settings.kamerplanter_mode == "full"` and says why: under `light` the auth,
+# privacy and platform-admin routers are never mounted, so the sweep walks a
+# surface roughly half the size and reports no offenders for what it cannot see.
+# The settings default is already `full`, which is precisely why the assertion is
+# there — a default is not a guarantee, and an environment that flips it would
+# leave this lane green over half a route table.
+
+on:
+  # EVERY push to EVERY branch, no `paths:`. A path- or branch-filtered required
+  # check never reports on a change it filtered out, and GitHub treats a check
+  # that never reports as satisfied — the shape `build-static-tests.yaml`
+  # documents at length for the same reason.
+  #
+  # `push` and NOT `pull_request`, matching `build-static-tests.yaml`, and the
+  # consequence is stated here rather than inherited: a `push` event does not
+  # fire in this repository for a branch that lives in a FORK, so a required
+  # check triggered only by `push` never reports on a fork pull request and
+  # branch protection blocks it permanently. That is already true of
+  # `static / Static CI Tests`, so promoting a second context changes nothing
+  # about who can contribute today — this is a single-maintainer repository and
+  # every branch is local. It becomes a real cost the moment an outside
+  # contributor opens a pull request, and at that point BOTH required workflows
+  # need a `pull_request` trigger, not just this one. Written down so that
+  # discovery is a lookup and not a re-derivation.
+  push:
+
+permissions:
+  contents: read
+
+# A branch pushed three times in a minute should run this once. The guarantee is
+# unchanged: the superseding run covers the newer head, and it is the head that
+# branch protection reads.
+concurrency:
+  group: backend-guards-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: src/backend
+
+jobs:
+  guards:
+    name: Write-route and tree guards
+    runs-on: ubuntu-latest
+    # `.github/settings.yml` states the rollback trigger for this required check
+    # as "the lane exceeds two minutes on a median run". Nothing enforced that:
+    # under `strict: true` a wedged run on a REQUIRED lane blocks every open pull
+    # request for GitHub's 360-minute default, and the stall has to be noticed by
+    # a human watching the merge train. Ten minutes is loose enough that a slow
+    # runner or a cold `uv` cache never trips it — the measured run is 41 s — and
+    # tight enough that a hang costs one lane rather than an afternoon.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
+          allow-prereleases: true
+
+      - name: Install dependencies
+        # Same install path as `backend.yml`: the hash-verified lock is the
+        # single source of install truth (NFR-009 §2.3). The uv pin is tracked
+        # by the workflow regex manager in renovate.json5 — #1383 carries the
+        # follow-up that collapses the eight copies of this pin into one.
+        run: |
+          python -m pip install 'uv==0.12.13'
+          uv sync --locked --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Mechanical guards
+        env:
+          KAMERPLANTER_MODE: full
+        run: pytest tests/unit/api -q

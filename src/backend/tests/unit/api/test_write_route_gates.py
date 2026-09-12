@@ -37,7 +37,6 @@ import pytest
 from fastapi.params import Depends as DependsParam
 
 from app.api.v1.router import api_router
-from app.common.auth import get_current_tenant, get_current_user
 from app.common.enums import TenantRole
 from app.common.exceptions import ForbiddenError
 from app.domain.models.tenant_context import TenantContext
@@ -50,11 +49,17 @@ ADMIN_PREFIX = "/api/v1/admin"
 class Operation:
     """One mounted write operation, with the dependencies its signature declares."""
 
-    def __init__(self, method: str, path: str, endpoint: Any) -> None:
+    def __init__(self, method: str, path: str, endpoint: Any, route: Any = None) -> None:
         self.method = method
         self.path = path
         self.module = endpoint.__module__
         self.name = endpoint.__name__
+        #: The mounted route itself, kept so the THIRD question below can read
+        #: `route.dependant` transitively. `inspect.signature` sees only what the
+        #: handler names; a router-level `APIRouter(dependencies=[...])` is
+        #: invisible to it, in both directions — a correctly gated route passes
+        #: for the wrong reason, and an ungated sibling passes identically.
+        self.route = route
         self.dependencies: dict[str, Any] = {}
         try:
             signature = inspect.signature(endpoint)
@@ -104,7 +109,7 @@ def mounted_write_operations() -> list[Operation]:
             path = prefix + (getattr(route, "path", "") or "")
             for method in getattr(route, "methods", ()) or ():
                 if method in WRITE_METHODS:
-                    found.append(Operation(method, path, endpoint))
+                    found.append(Operation(method, path, endpoint, route))
 
     walk(api_router)
     return found
@@ -147,6 +152,33 @@ _TENANT_ALLOWLIST: dict[str, str] = {
     # repository create/update/delete.
     "nutrient_plans.tenant_router.calculate_dosages": "computation, no write",
     "nutrient_calculations.router.area_dosing": "computation, no write",
+    # The three below joined this list in #1402, and the route they took here is
+    # worth stating: they were not "ungated members-only routes" being written
+    # down — they answered an ANONYMOUS caller, and each of them reads the
+    # fertilizer catalogue with `FertilizerService.get_fertilizer`, whose
+    # `tenant_key=""` default skips its own ownership check. Gating them on
+    # `get_current_tenant` and threading `ctx.tenant_key` into that call is what
+    # moved them from "unauthenticated, reading across tenants" to "computation
+    # any member may run" — the same category their `area_dosing` sibling was
+    # always in. The four remaining calculators in that module need no entry:
+    # they carry the router-level gate and no `ctx` parameter, so this sweep's
+    # question ("is `ctx` bare?") does not apply to them at all.
+    "nutrient_calculations.router.mixing_protocol": "computation over the caller's own catalogue, no write",
+    "nutrient_calculations.router.mixing_safety": "computation over the caller's own catalogue, no write",
+    "nutrient_calculations.router.ec_budget": "computation over the caller's own catalogue, no write",
+    # These four reach no database at all — they compute from the request body
+    # alone. They are listed here rather than left silent because the router-level
+    # gate #1402 gave them removed `ctx` from their signatures, and the version of
+    # this sweep that read `inspect.signature` therefore stopped reporting them
+    # while the third question was satisfied by the router. Four routes reported by
+    # nothing, recorded nowhere: the opt-in drift this file exists to catch, moved
+    # one level up by the change that was closing it. The sweep now reads the
+    # effective chain, so the router-level gate is visible to it and these four
+    # need the same written decision as their siblings.
+    "nutrient_calculations.router.flushing_protocol": "computation from the request body, no read, no write",
+    "nutrient_calculations.router.runoff_analysis": "computation from the request body, no read, no write",
+    "nutrient_calculations.router.water_mix": "computation from the request body, no read, no write",
+    "nutrient_calculations.router.water_mix_reverse": "computation from the request body, no read, no write",
     "tanks.tenant_router.calculate_ec_dilution": "computation over a read tank, no write",
     "plant_instances.tenant_router.validate_planting": "validation, no write",
     "tasks.tenant_router.validate_hst": "validation, no write",
@@ -166,6 +198,206 @@ _TENANT_ALLOWLIST: dict[str, str] = {
 #: reworded (#1401): an allowlist that writes a drift down as approved is worse than no
 #: allowlist, because the next reader takes it as a decision someone made on purpose.
 _ADMIN_ALLOWLIST: dict[str, str] = {}
+
+
+#: THE THIRD QUESTION (#1402), and it is a different one from the two above.
+#:
+#: Both selectors above key on the PRESENCE of a specific weak dependency: the
+#: tenant half asks whether `ctx` IS `get_current_tenant`, the admin half whether
+#: `get_current_user` appears. A route carrying NO dependency at all fails both
+#: tests in the passing direction, and 133 write operations lie outside both
+#: prefixes besides. Measured on 2026-09-12, before this question existed:
+#: **24** of 439 mounted write operations resolved no authorisation dependency
+#: anywhere — fourteen of them not deliberately public. Seven were the
+#: calculators under `/api/v1/calculations`, invisible because they fall through
+#: both prefixes; seven were under `/t/{tenant_slug}/nutrient-calculations`,
+#: which the tenant selector SEES and does not report. Three of those seven also
+#: read the fertilizer catalogue with `FertilizerService.get_fertilizer`'s
+#: `tenant_key=""` default, which skips its own ownership check.
+#:
+#: This question asks instead: does the effective dependency chain of this write
+#: operation contain ANY authorisation dependency? It reads `route.dependant`
+#: transitively rather than `inspect.signature`, so a router-level
+#: `APIRouter(dependencies=[...])` counts — which is how the fourteen were fixed,
+#: and a per-handler read would have reported them as still open.
+#:
+#: It is deliberately coarse. "Carries some authorisation" is not "carries the
+#: RIGHT authorisation": the installation-wide master data behind bare
+#: `get_current_user` (#1402 group B) passes this question and is still a defect.
+#: A coarse question that cannot be fooled by absence is worth more than a
+#: precise one with a hole, and the precise one is the next refinement.
+#: Dependencies that actually REFUSE a caller, by qualified name. A set of exact
+#: names and not substring markers, because the first version of this list used
+#: substrings and three of them were wrong in the permissive direction: `"mcp_"`
+#: matched `require_mcp_enabled` (an operator feature flag that 404s when MCP is
+#: off and authorises nobody when it is on) plus `get_mcp_dispatcher` and
+#: `get_mcp_session_store`; `"api_key"` matched the `APIKeyHeader` scheme object,
+#: which carries `auto_error=False` and therefore never refuses anything. No route
+#: was saved by a weak match alone when this was found, so it was latent — but a
+#: write route added under `/api/v1/mcp` carrying only `get_mcp_dispatcher` would
+#: have counted as authorised and been anonymously reachable.
+#:
+#: `__qualname__` rather than `__name__`: the three `require_*` factories all
+#: return a closure called `_check`, indistinguishable by name and exact by
+#: qualified name.
+_AUTHORISATION: frozenset[str] = frozenset(
+    {
+        "get_current_user",
+        "get_current_tenant",
+        "require_platform_admin",
+        "_require_platform_admin",
+        "require_permission.<locals>._check",
+        "require_tenant_role.<locals>._check",
+        "require_admin_scope.<locals>._check",
+        "require_attachment_permission.<locals>._dependency",
+        "get_mcp_principal",
+    }
+)
+
+#: The subset above that gates on MORE than "is authenticated" or "is a member".
+_ROLE_GATES: frozenset[str] = frozenset(
+    {
+        "require_permission.<locals>._check",
+        "require_tenant_role.<locals>._check",
+        "require_admin_scope.<locals>._check",
+        "require_platform_admin",
+        "_require_platform_admin",
+        "require_attachment_permission.<locals>._dependency",
+    }
+)
+
+#: Dependencies whose NAME reads like authorisation and which authorise nobody.
+#: Enumerated with a reason so the classification cannot drift silently:
+#: `test_every_auth_shaped_dependency_is_classified` fails on a name in the live
+#: app that matches neither set — the obsolescence rule the allowlists already
+#: follow, applied one level up to the vocabulary itself.
+_NOT_AUTHORISATION: dict[str, str] = {
+    "require_mcp_enabled": "operator feature flag; 404s when MCP is off, authorises nobody when on",
+    "require_ai_tenant_enabled": "REQ-031 feature flag, not a caller check",
+    "require_ai_feature_flag": "REQ-031 operator flag, not a caller check",
+    "get_is_platform_admin": "returns a bool for the caller to branch on; refuses nobody",
+    "APIKeyHeader": "scheme object with auto_error=False - extracts a header, never refuses",
+    "HTTPBearer": "scheme object; extraction only, the provider decides",
+    "get_auth_provider": "constructs the provider; get_current_user is what calls it",
+    "get_auth_service": "service dependency",
+    "get_tenant_service": "service dependency",
+    "get_tenant_repo": "repository dependency",
+    "get_user_service": "service dependency",
+    "get_user_preference_service": "service dependency",
+    "get_oauth_engine": "engine dependency",
+    "get_active_tenant_key": "resolves the header slug; the refusal is the get_current_user beneath it",
+    "get_active_tenant_context": "same - authorisation is the get_current_user it depends on",
+    "get_mcp_dispatcher": "infrastructure; dispatches after get_mcp_principal has decided",
+    # A FACTORY, not a gate, and it was in `_AUTHORISATION` for one commit — the
+    # same mistake the substring `"mcp_"` made, repeated by hand after the
+    # substrings were removed. `dependencies.py:879` constructs
+    # `McpAuthenticator(...)` and refuses nobody; the refusal is
+    # `authenticator.authenticate(...)`, called inside the handler. Its sibling
+    # `get_task_entity_guard` has the same shape and was correctly left out,
+    # which is what made the inconsistency visible.
+    "get_mcp_authenticator": "constructs the authenticator; the handler's authenticate() call is the refusal",
+    "get_mcp_session_store": "infrastructure",
+}
+
+#: Substrings that make a dependency name "auth-shaped" for the classification
+#: guard. Deliberately generous: a name caught here and in neither set is a test
+#: failure asking for a one-line decision, which is cheap. A name NOT caught here
+#: is assumed infrastructure, which is the residual risk and why this leans wide.
+#: Measured at this head: 27 of ~90 distinct names mounted on write routes match.
+#: `mcp` and `bearer` are here because the coverage test below found them
+#: missing: `get_mcp_dispatcher`, `get_mcp_session_store` and `HTTPBearer` were
+#: all classified — somebody had already decided they authorise nobody — and the
+#: filter could not see any of them, so a future sibling would have gone
+#: unreported. A vocabulary the guard cannot read is not a classification.
+_AUTH_SHAPED = (
+    "auth",
+    "admin",
+    "tenant",
+    "user",
+    "principal",
+    "permission",
+    "role",
+    "require_",
+    "key",
+    "mcp",
+    "bearer",
+)
+
+
+#: Write operations that legitimately resolve no authorisation at all. Every entry
+#: is an endpoint a caller must reach BEFORE having a session, or one the product
+#: publishes on purpose. Anything else here is a defect wearing a reason.
+_PUBLIC_ALLOWLIST: dict[str, str] = {
+    "auth.router.login": "issues the session; cannot require one",
+    "auth.router.register": "creates the account; cannot require one",
+    "auth.router.refresh": "presents the refresh cookie, not an access token",
+    "auth.router.logout": "must succeed for an expired or absent session",
+    "auth.router.request_password_reset": "the caller has lost the credential",
+    "auth.router.confirm_password_reset": "authorised by the emailed token",
+    "auth.router.verify_email": "authorised by the emailed token",
+    "auth.router.redeem_device_pairing": "authorised by the pairing code",
+    "privacy.router.confirm_email_change": "authorised by the emailed token (REQ-025)",
+    "ki_assistent.public_router.public_ask": "REQ-031 light-mode probe, published on purpose",
+    # Authenticates from the API key in the REQUEST BODY, inside the handler, the
+    # way `login` authenticates from a password — so it carries no transport
+    # credential and never will. It was previously exempt by accident:
+    # `get_mcp_authenticator` was miscounted as authorisation and this is the one
+    # live route whose only `_AUTHORISATION` member it was. The exemption is the
+    # same; what changed is that it is now written down.
+    #
+    # Not unguarded: `require_mcp_enabled` 404s the route when MCP is off, the
+    # auth rate limiter applies per IP, and REQ-033 SEC-003 collapses the
+    # valid-non-service case into the same generic 401 so it cannot be used as an
+    # oracle.
+    "auth.router.validate_service_account": "authenticates from the key in the body, like login",
+}
+
+
+def _authorisation_chain(operation: Operation) -> list[str]:
+    """Every dependency name in the operation's effective chain, router level included."""
+    dependant = getattr(operation.route, "dependant", None)
+    if dependant is None:  # pragma: no cover - defensive
+        return []
+
+    names: list[str] = []
+    seen: set[int] = set()
+
+    def walk(node: Any) -> None:
+        for sub in node.dependencies:
+            if id(sub) in seen:
+                continue
+            seen.add(id(sub))
+            call = sub.call
+            names.append(getattr(call, "__qualname__", type(call).__name__))
+            walk(sub)
+
+    walk(dependant)
+    return names
+
+
+def _resolves_authorisation(operation: Operation) -> bool:
+    return bool(set(_authorisation_chain(operation)) & _AUTHORISATION)
+
+
+def _resolves_bare_tenant_context(operation: Operation) -> bool:
+    """Authenticated and a member, and nothing beyond that.
+
+    Read from the effective chain rather than `inspect.signature`. The signature
+    read had a blind spot that #1402 created and then had to close: moving the
+    `nutrient_calculations` gate onto its ROUTER removed `ctx` from four
+    handlers' signatures, so this sweep stopped seeing them while the third
+    question was satisfied by the router-level `get_current_tenant`. Four routes
+    were reported by nothing and recorded in no allowlist — the opt-in drift this
+    file exists to catch, relocated one level up.
+    """
+    names = set(_authorisation_chain(operation))
+    return "get_current_tenant" in names and not (names & _ROLE_GATES)
+
+
+def _resolves_bare_user(operation: Operation) -> bool:
+    """Authenticated, with no role or scope gate above it."""
+    names = set(_authorisation_chain(operation))
+    return "get_current_user" in names and not (names & _ROLE_GATES)
 
 
 def _tenant_write_operations() -> list[Operation]:
@@ -236,7 +468,7 @@ class TestTenantWriteGates:
         offenders = [
             op
             for op in _tenant_write_operations()
-            if op.dependencies.get("ctx") is get_current_tenant and op.id not in _TENANT_ALLOWLIST
+            if _resolves_bare_tenant_context(op) and op.id not in _TENANT_ALLOWLIST
         ]
         assert not offenders, (
             "These tenant-scoped write routes resolve `ctx` through bare `get_current_tenant`, "
@@ -258,7 +490,7 @@ class TestTenantWriteGates:
             operation = by_id.get(route_id)
             if operation is None:
                 stale.append(f"{route_id}: no such tenant write route ({reason})")
-            elif operation.dependencies.get("ctx") is not get_current_tenant:
+            elif not _resolves_bare_tenant_context(operation):
                 stale.append(f"{route_id}: now gated, drop the entry ({reason})")
         assert not stale, "Obsolete _TENANT_ALLOWLIST entries:\n  " + "\n  ".join(stale)
 
@@ -271,9 +503,7 @@ class TestTenantWriteGates:
 class TestAdminWriteGates:
     def test_no_admin_write_route_resolves_its_caller_through_bare_get_current_user(self):
         offenders = [
-            op
-            for op in _admin_write_operations()
-            if get_current_user in op.dependencies.values() and op.id not in _ADMIN_ALLOWLIST
+            op for op in _admin_write_operations() if _resolves_bare_user(op) and op.id not in _ADMIN_ALLOWLIST
         ]
         assert not offenders, (
             "These routes write installation-wide configuration behind `get_current_user` alone, "
@@ -288,7 +518,7 @@ class TestAdminWriteGates:
             operation = by_id.get(route_id)
             if operation is None:
                 stale.append(f"{route_id}: no such admin write route ({reason})")
-            elif get_current_user not in operation.dependencies.values():
+            elif not _resolves_bare_user(operation):
                 stale.append(f"{route_id}: now gated, drop the entry ({reason})")
         assert not stale, "Obsolete _ADMIN_ALLOWLIST entries:\n  " + "\n  ".join(stale)
 
@@ -297,39 +527,140 @@ class TestAdminWriteGates:
             assert len(reason) >= 12, f"{route_id} carries no usable reason: {reason!r}"
 
 
+def _stub_operation(path: str, *dependency_names: str | tuple, module: str = "app.api.v1.invented.router") -> Operation:
+    """An Operation whose effective chain is exactly `dependency_names`.
+
+    The probes below build a stub `route.dependant` rather than a handler
+    signature, because the sweeps read the effective chain now. A probe built
+    from a signature has `route=None`, `_authorisation_chain` returns `[]` for
+    it, and every predicate under test answers the same way regardless of what
+    it does — which is how the first version of this class came to leave the
+    admin sweep provably unguarded (see the docstring below).
+    """
+
+    class _Call:
+        def __init__(self, name: str) -> None:
+            self.__qualname__ = name
+
+    def _sub(spec: str | tuple):
+        """A dependency node. A tuple is `(name, *children)` and nests one level deeper.
+
+        Nesting is not decoration: `_authorisation_chain` descends transitively,
+        and that descent is what this file credits with seeing router-level and
+        parent-router gates. A probe that could only build FLAT chains left it
+        uncontrolled — measured, replacing `walk(sub)` with `pass` left all 88
+        tests green while the chain changed for 428 of 439 real routes.
+        """
+        if isinstance(spec, tuple):
+            name, *children = spec
+            return type("Sub", (), {"call": _Call(name), "dependencies": [_sub(c) for c in children]})()
+        return type("Sub", (), {"call": _Call(spec), "dependencies": []})()
+
+    subs = [_sub(spec) for spec in dependency_names]
+
+    class _Route:
+        dependant = type("D", (), {"dependencies": subs})()
+
+    def _handler() -> None: ...
+
+    _handler.__module__ = module
+    return Operation("POST", path, _handler, _Route())
+
+
 class TestTheGuardCanFail:
     """Falsification, in-process: an assertion nobody has seen fail proves nothing.
 
-    Each of these builds the same comparison the tests above make, against an
-    operation known to violate it, and asserts the comparison catches it. Without
-    them a typo in a selector — a prefix that matches nothing, a dependency
-    identity that is never equal — leaves every test above green and silent.
+    **These probes were wrong for exactly one commit and the way they were wrong
+    is the point of the class.** When the two sweeps moved from `inspect.signature`
+    to the effective chain, these kept asserting the signature expressions — a
+    different statement from the one the sweeps now make. Measured by mutation at
+    the time: replacing the body of `_resolves_bare_user` with `return False`
+    left **all 84 tests in this file green**. `_ADMIN_ALLOWLIST` is empty by
+    design, so the admin sweep had no other control either, and a typo making it
+    constant-`False` would have shipped in silence.
+
+    Every probe below therefore drives the predicate the sweep drives, by name.
     """
 
-    def test_an_ungated_tenant_route_would_be_reported(self):
-        def _handler(ctx=DependsParam(dependency=get_current_tenant)):  # pragma: no cover
-            return None
-
-        operation = Operation("POST", "/api/v1/t/{tenant_slug}/invented", _handler)
-        assert operation.dependencies.get("ctx") is get_current_tenant
+    def test_a_bare_tenant_route_is_reported(self):
+        operation = _stub_operation("/api/v1/t/{tenant_slug}/invented", "get_current_tenant")
+        assert _resolves_bare_tenant_context(operation)
         assert operation.id not in _TENANT_ALLOWLIST
 
-    def test_an_ungated_admin_route_would_be_reported(self):
-        def _handler(_current_user=DependsParam(dependency=get_current_user)):  # pragma: no cover
-            return None
+    def test_a_role_gated_tenant_route_is_not_reported(self):
+        """The control: a predicate that reports everything is as useless as one that reports nothing."""
+        operation = _stub_operation(
+            "/api/v1/t/{tenant_slug}/invented",
+            "get_current_tenant",
+            "require_permission.<locals>._check",
+        )
+        assert not _resolves_bare_tenant_context(operation)
 
-        operation = Operation("POST", "/api/v1/admin/invented", _handler)
-        assert get_current_user in operation.dependencies.values()
+    def test_a_bare_admin_route_is_reported(self):
+        operation = _stub_operation("/api/v1/admin/invented", "get_current_user")
+        assert _resolves_bare_user(operation)
         assert operation.id not in _ADMIN_ALLOWLIST
 
-    def test_a_gated_route_would_not_be_reported(self):
-        """The control: a selector that reports everything is as useless as one that reports nothing."""
+    def test_a_platform_admin_route_is_not_reported(self):
+        """The admin sweep's only control — `_ADMIN_ALLOWLIST` is empty, so nothing else drives it."""
+        operation = _stub_operation("/api/v1/admin/invented", "get_current_user", "require_platform_admin")
+        assert not _resolves_bare_user(operation)
 
-        def _handler(ctx=DependsParam(dependency=lambda: None)):  # pragma: no cover
-            return None
+    def test_an_unauthenticated_route_is_reported_by_the_third_question(self):
+        operation = _stub_operation("/api/v1/invented", "get_fertilizer_service")
+        assert not _resolves_authorisation(operation)
 
-        operation = Operation("POST", "/api/v1/t/{tenant_slug}/invented", _handler)
-        assert operation.dependencies.get("ctx") is not get_current_tenant
+    def test_a_gate_nested_one_level_down_is_still_found(self):
+        """The transitive descent, controlled.
+
+        `get_active_tenant_context` already has this shape in production: it
+        resolves `get_current_user` beneath itself rather than naming it at the
+        route. A wrapper that pulled `get_current_tenant` one level down would
+        make every route behind it invisible to the tenant sweep, silently, and
+        nothing here noticed until this probe existed.
+        """
+        operation = _stub_operation(
+            "/api/v1/t/{tenant_slug}/invented",
+            ("get_some_wrapper", "get_current_tenant"),
+        )
+
+        # The nesting is pinned FIRST, because the helper that builds it is a
+        # control too. Measured: a `_sub` that attached tuple children as
+        # SIBLINGS instead of nesting them left all 91 tests green, and the two
+        # probes here went inert without a word — they only asked whether a name
+        # was in the chain, never at what depth. Combined with the `walk(sub)`
+        # mutation this class exists to catch, 3 failures collapsed to 1, and
+        # that one came from the real tree rather than from any probe.
+        top_level = [dependency.call.__qualname__ for dependency in operation.route.dependant.dependencies]
+        assert top_level == ["get_some_wrapper"], (
+            f"the probe is not nested: {top_level}. _sub flattened the chain, so nothing below "
+            "asserts anything about transitivity"
+        )
+
+        assert "get_current_tenant" in _authorisation_chain(operation)
+        assert _resolves_bare_tenant_context(operation)
+
+    def test_a_role_gate_nested_one_level_down_still_counts(self):
+        """The other direction: nesting must not turn a gated route into an offender."""
+        operation = _stub_operation(
+            "/api/v1/t/{tenant_slug}/invented",
+            "get_current_tenant",
+            ("get_some_wrapper", "require_permission.<locals>._check"),
+        )
+        assert not _resolves_bare_tenant_context(operation)
+
+    def test_the_three_predicates_disagree_on_the_same_operation(self):
+        """They ask different questions, and a rewrite that collapsed them would show here.
+
+        A tenant route behind bare `get_current_tenant`: reported by sweep 1,
+        satisfied by sweep 3, untouched by sweep 2. If any two of these ever
+        answer identically for every input, two of the three are redundant and one
+        of them is not doing the job its name claims.
+        """
+        operation = _stub_operation("/api/v1/t/{tenant_slug}/invented", "get_current_tenant")
+        assert _resolves_bare_tenant_context(operation)
+        assert _resolves_authorisation(operation)
+        assert not _resolves_bare_user(operation)
 
 
 @pytest.mark.parametrize("route_id", sorted(_TENANT_ALLOWLIST) + sorted(_ADMIN_ALLOWLIST))
@@ -393,3 +724,258 @@ class TestTheGatesActuallyRefuse:
         by_id = {op.id: op for op in _tenant_write_operations()}
         check = by_id[route_id].dependencies["ctx"]
         assert check(_grower()) is not None
+
+
+class TestEveryWriteOperationResolvesSomeAuthorisation:
+    """The third question (#1402): is ANYTHING gating this route?
+
+    The two sweeps above ask whether a specific weak dependency is present. This
+    one asks whether any authorisation is, which is the question that catches a
+    route carrying none — the case that passed both of them silently, 24 times.
+    """
+
+    def test_no_write_operation_is_reachable_without_authorisation(self):
+        offenders = [
+            op
+            for op in mounted_write_operations()
+            if not _resolves_authorisation(op) and op.id not in _PUBLIC_ALLOWLIST
+        ]
+        assert not offenders, (
+            "These write operations resolve no authorisation dependency anywhere in their "
+            "effective chain — not on the handler, not on their router, not on a parent "
+            "router. Gate them, or add them to _PUBLIC_ALLOWLIST with a reason that "
+            "survives the question 'why may an anonymous caller do this?':\n  " + _format(offenders)
+        )
+
+    def test_every_public_entry_still_exists_and_is_still_public(self):
+        """Both halves of the obsolescence rule, and the second is the one that rots.
+
+        An entry naming a route that was since gated would go on excusing a gate
+        nobody needs excused, and the next reader takes it as a decision. The
+        same rule `check_layer_imports` and `check_route_role_guards` follow.
+        """
+        by_id = {op.id: op for op in mounted_write_operations()}
+        stale = []
+        for route_id in _PUBLIC_ALLOWLIST:
+            operation = by_id.get(route_id)
+            if operation is None:
+                stale.append(f"{route_id}: no longer mounted")
+            elif _resolves_authorisation(operation):
+                stale.append(f"{route_id}: now resolves authorisation — drop the entry")
+        assert not stale, "Obsolete _PUBLIC_ALLOWLIST entries:\n  " + "\n  ".join(stale)
+
+    def test_every_reason_is_written_out(self):
+        for route_id, reason in _PUBLIC_ALLOWLIST.items():
+            assert len(reason) >= 12, f"{route_id} carries no usable reason: {reason!r}"
+
+    def test_the_allowlist_is_small(self):
+        """A ceiling, because the cheapest way to make this test green is to grow the list.
+
+        Eleven entries today, all of them pre-session endpoints, a published
+        probe, or a route that authenticates from its own request body. A twelfth
+        is not automatically wrong, but it should cost a conversation.
+        """
+        assert len(_PUBLIC_ALLOWLIST) <= 12, (
+            f"_PUBLIC_ALLOWLIST has grown to {len(_PUBLIC_ALLOWLIST)} entries. "
+            "Adding a route here makes it anonymously reachable; say why in the issue, not only in the dict."
+        )
+
+
+class TestTheThirdQuestionCanFail:
+    """Falsifiability for the question above — a sweep that cannot report is not a gate.
+
+    `TestTheGuardCanFail` does this for the first two questions. This one exists
+    because the third question is the one that was missing, and a question added
+    to close a hole is exactly the kind that gets added inert.
+    """
+
+    def test_a_router_level_gate_counts_as_authorisation(self):
+        """The positive control, and it is not decoration.
+
+        The fourteen routes #1402 gated were fixed at the ROUTER, not the handler.
+        Read through `inspect.signature` they still name no auth parameter, so a
+        per-handler implementation of this question would report them as open
+        forever and the triage would never end.
+        """
+        by_id = {op.id: op for op in mounted_write_operations()}
+        operation = by_id["calculations.router.calc_vpd"]
+        assert operation.dependencies == {} or "ctx" not in operation.dependencies
+        assert _resolves_authorisation(operation), (
+            "calc_vpd is gated by APIRouter(dependencies=[Depends(get_current_user)]); "
+            "if this fails, the question reads the handler signature and not the effective chain"
+        )
+
+    def test_an_ungated_operation_would_be_reported(self):
+        """The negative control, built rather than found — the tree has none left."""
+
+        class _NoDependencies:
+            dependencies: list[Any] = []
+
+        class _BareRoute:
+            dependant = _NoDependencies()
+
+        def _probe() -> None: ...
+
+        _probe.__module__ = "app.api.v1.calculations.router"
+        operation = Operation("POST", "/api/v1/calculations/probe", _probe, _BareRoute())
+        assert not _resolves_authorisation(operation)
+        assert operation.id not in _PUBLIC_ALLOWLIST
+
+    def test_a_non_authorising_dependency_does_not_count(self):
+        """A service dependency must not read as authorisation.
+
+        The first version of this file matched substrings, and `"api_key"` matched
+        the `APIKeyHeader` scheme object while `"mcp_"` matched
+        `require_mcp_enabled`. Both authorise nobody. This probes the real
+        classification rather than a hand-picked name.
+        """
+
+        def _service_dependency() -> None: ...
+
+        _service_dependency.__qualname__ = "get_fertilizer_service"
+
+        class _Sub:
+            call = _service_dependency
+            dependencies: list[Any] = []
+
+        class _Route:
+            dependant = type("D", (), {"dependencies": [_Sub()]})()
+
+        def _probe() -> None: ...
+
+        _probe.__module__ = "app.api.v1.calculations.router"
+        operation = Operation("POST", "/x", _probe, _Route())
+        assert _authorisation_chain(operation) == ["get_fertilizer_service"]
+        assert not _resolves_authorisation(operation)
+
+
+class TestTheClassificationItselfCannotDrift:
+    """The vocabulary is an allowlist too, and allowlists rot (#1402).
+
+    `_AUTHORISATION` decides what the three sweeps above believe a gate is. A new
+    dependency named like one and classified as neither would be treated as
+    infrastructure and silently stop counting — the same failure shape as a seed
+    file outside a `check-jsonschema` hook or a write route outside a selector.
+    """
+
+    def test_every_auth_shaped_dependency_is_classified(self):
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        unclassified = sorted(
+            name
+            for name in seen
+            if any(shape in name.lower() for shape in _AUTH_SHAPED)
+            and name not in _AUTHORISATION
+            and name not in _NOT_AUTHORISATION
+        )
+        assert not unclassified, (
+            "These dependencies are mounted on write routes and read like authorisation, but the "
+            "sweeps classify them as neither. Add each to _AUTHORISATION if it refuses a caller, or "
+            "to _NOT_AUTHORISATION with the reason it does not:\n  " + "\n  ".join(unclassified)
+        )
+
+    def test_the_two_sets_are_disjoint(self):
+        overlap = _AUTHORISATION & frozenset(_NOT_AUTHORISATION)
+        assert not overlap, f"classified as both: {sorted(overlap)}"
+
+    def test_role_gates_are_a_subset_of_authorisation(self):
+        assert _ROLE_GATES <= _AUTHORISATION
+
+    def test_every_non_authorisation_reason_is_written_out(self):
+        for name, reason in _NOT_AUTHORISATION.items():
+            assert len(reason) >= 12, f"{name} carries no usable reason: {reason!r}"
+
+    def test_the_shape_filter_matches_every_name_that_was_classified(self):
+        """The real invariant, and it is not a count.
+
+        The guard above can only demand a decision on a name `_AUTH_SHAPED`
+        matches. So the filter must match every name anyone has already decided
+        about — otherwise a classified name falls out of the scan and the next
+        one like it is never reported.
+
+        A count cannot express that. The first version asserted a floor of 12
+        matches; measured, `("user", "tenant", "auth")` matches 14 and passes it
+        while `require_*`, `admin`, `permission`, `role`, `principal` and `key`
+        drop out of the scan entirely — a later `require_new_gate` in neither set
+        would then go unreported, which is precisely the vacuity this is for.
+        Under the rule below that narrowing fails, because `require_platform_admin`
+        is classified, live, and no longer matched.
+        """
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        classified_and_live = (set(_AUTHORISATION) | set(_NOT_AUTHORISATION)) & seen
+        unmatched = sorted(
+            name for name in classified_and_live if not any(shape in name.lower() for shape in _AUTH_SHAPED)
+        )
+        assert not unmatched, (
+            "_AUTH_SHAPED no longer matches these names, although they are classified and mounted. "
+            "The classification guard cannot see them, so a future sibling of theirs would go "
+            "unreported:\n  " + "\n  ".join(unmatched)
+        )
+
+    def test_no_shape_is_an_exact_dependency_name(self):
+        """A shape must be a SUBSTRING, not a name written out in full.
+
+        The cheapest way to make the coverage rule above green for an awkward
+        future name is to paste that name into `_AUTH_SHAPED` — `"httpbearer"`
+        would have worked here instead of `"bearer"`. That passes the ceiling
+        (one more match) and leaves `test_every_auth_shaped_dependency_is_classified`
+        exactly as vacuous as before, because the filter then only enumerates
+        names somebody has already classified and can never surface a new one.
+
+        Not asserting that every shape is load-bearing, and that omission is
+        deliberate: measured, `principal`, `permission` and `role` are each
+        covered today by another substring (`mcp`, `require_`), so a
+        load-bearing rule would demand their deletion. They are there for the
+        names that do not exist yet — a `get_principal` without the `mcp` prefix,
+        a `check_permission_scope` without `require_` — which is the whole point
+        of a shape filter. Cheap insurance is not drift.
+        """
+        lowered = {name.lower() for name in set(_AUTHORISATION) | set(_NOT_AUTHORISATION)}
+        exact = sorted(shape for shape in _AUTH_SHAPED if shape.lower() in lowered)
+        assert not exact, (
+            "These _AUTH_SHAPED entries are whole dependency names rather than shapes, so the "
+            "classification guard can only ever rediscover what is already classified:\n  " + "\n  ".join(exact)
+        )
+
+    def test_the_shape_filter_does_not_match_everything(self):
+        """Too wide is also a failure: it would demand a decision on every service in the tree."""
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        matched = {name for name in seen if any(shape in name.lower() for shape in _AUTH_SHAPED)}
+        assert len(matched) < len(seen) // 2, (
+            f"_AUTH_SHAPED matches {len(matched)} of {len(seen)} dependency names. At that width the "
+            "guard stops distinguishing authorisation from infrastructure."
+        )
+
+    def test_every_non_authorisation_entry_is_still_mounted(self):
+        """The obsolescence rule, applied to the vocabulary as well as the routes.
+
+        This file's central argument is that an allowlist without one rots.
+        `_NOT_AUTHORISATION` is an allowlist — it says "this name looks like a
+        gate and is not" — and until this test it had no such rule.
+
+        **Exact, not a floor.** The first version allowed half the set to be dead,
+        on the grounds that an entry might be classified against a read-only
+        route. Measured: all 18 entries appear on mounted write routes, so that
+        exception carried nothing — while the floor let a name existing nowhere in
+        the app sit here indefinitely, verified by adding one and watching all 88
+        tests stay green. If a future entry really is read-route-only it needs its
+        own exemption with a reason, not a gap wide enough for ten.
+        """
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        stale = sorted(name for name in _NOT_AUTHORISATION if name not in seen)
+        assert not stale, (
+            "These _NOT_AUTHORISATION names appear on no mounted write route. Either the dependency "
+            "is gone and the entry should go with it, or it moved to a read route and needs a reason "
+            "saying so:\n  " + "\n  ".join(stale)
+        )

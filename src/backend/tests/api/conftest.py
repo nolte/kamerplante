@@ -28,6 +28,39 @@ def block_datastore_access(request: pytest.FixtureRequest, monkeypatch: pytest.M
 
 
 @pytest.fixture(autouse=True)
+def restore_dependency_overrides() -> Iterator[None]:
+    """Hand every API test the app's real dependency graph, and hand it back (#1402).
+
+    ``app.main.app`` is a module-level singleton, so ``app.dependency_overrides``
+    is process state exactly like the rate-limit counters below — and until this
+    fixture existed, a module that installed an override and had no teardown left
+    it in place for every test that ran afterwards.
+
+    The failure that shape produces is the dangerous kind: it makes later tests
+    **pass**. A file that substitutes a permissive auth provider and never removes
+    it turns a subsequent "an expired token is refused" assertion into a 200 as
+    somebody else's user, and the suite reports green. It was found by the
+    pre-merge review of #1402, where two files that had to authenticate their
+    calls installed exactly that and returned the client without a ``finally``.
+
+    Restoring a *copy* rather than clearing: a fixture that emptied the dict would
+    also discard overrides a session- or class-scoped fixture installed on
+    purpose, which is a different bug in the opposite direction.
+    """
+    from unittest.mock import patch
+
+    with patch("app.main.get_connection"), patch("app.main.ensure_collections"):
+        from app.main import app
+
+    snapshot = dict(app.dependency_overrides)
+    try:
+        yield
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(snapshot)
+
+
+@pytest.fixture(autouse=True)
 def reset_rate_limiter() -> Iterator[None]:
     """Hand every API test the full rate-limit budget, and hand it back (#989).
 

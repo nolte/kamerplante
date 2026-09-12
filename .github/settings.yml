@@ -84,6 +84,49 @@ branches:
           # block every pull request in the repository whenever CI happens to
           # start between 00:00 and 02:00 UTC. Fix the date boundary first; the
           # promotion is a follow-up, not a decision left unmade.
+          #
+          # #1404 — the mechanical write-route guards, and ONLY those. Until this
+          # promotion no backend test suite was an enforced check at all:
+          # `static` runs pre-commit, `lint-test-build (22)` is the frontend, and
+          # `Backend CI` is path-filtered and advisory. That is where
+          # `tests/unit/api/test_write_route_gates.py` lives — the mechanical
+          # guard against this repository's largest defect class, 23 closed
+          # issues of which name a predecessor in their own title (#719 "same
+          # IDOR as #717", #948 "write-side twin of #927", #1018 "same shape as
+          # #997", #952, #1112, #1146, …). The guard that finally enumerates that
+          # class could not block a merge.
+          #
+          # WHY A SEPARATE WORKFLOW AND NOT `Backend CI`: `on:` is a
+          # workflow-level key, so a job cannot widen its workflow's triggers.
+          # `backend.yml` is path-filtered to `src/backend/**`, which excludes the
+          # exact case this promotion covers — a frontend-only pull request that
+          # also adds an ungated backend write route. See the header of
+          # `.github/workflows/backend-guards.yml`.
+          #
+          # MEASURED BEFORE PROMOTION, because `strict: true` multiplies every
+          # required check across the merge train:
+          #
+          #   the guard lane in CI on ce9f116ce        41 s
+          #   `tests/unit/api/` locally, 271 tests     15 s
+          #   the whole unit suite locally, 8345       240 s
+          #
+          # 41 s is why the lane runs a DIRECTORY and not the suite. The
+          # expensive full backend suite stays in `backend.yml`, path-filtered
+          # and advisory; #836, the midnight-UTC flake named above as the blocker
+          # for promoting *that* lane, is closed (2026-07-28) but its lane is
+          # still four minutes and is a separate decision.
+          #
+          # STABILITY, measured over the last 40 runs of each on 2026-09-12:
+          #   `Backend CI`        33 success, 0 failure, 7 cancelled
+          #   `Static CI Tests`   34 success, 2 failure, 4 cancelled
+          # The lane being promoted has fewer failures over that window than the
+          # one already required. Cancellations are the merge train, not
+          # instability: `strict: true` supersedes in-flight runs.
+          #
+          # TAKEN BACK IF: the lane exceeds two minutes on a median run, or it
+          # reports a failure that does not trace to a real ungated route. Either
+          # is a measurement, not a judgement call.
+          - Write-route and tree guards
       enforce_admins: true
       # No `required_pull_request_reviews` block, deliberately — recorded here
       # because the CI/CD audit on 2026-08-01 flagged its absence and the live
