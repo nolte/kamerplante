@@ -623,6 +623,20 @@ class TestTheGuardCanFail:
             "/api/v1/t/{tenant_slug}/invented",
             ("get_some_wrapper", "get_current_tenant"),
         )
+
+        # The nesting is pinned FIRST, because the helper that builds it is a
+        # control too. Measured: a `_sub` that attached tuple children as
+        # SIBLINGS instead of nesting them left all 91 tests green, and the two
+        # probes here went inert without a word — they only asked whether a name
+        # was in the chain, never at what depth. Combined with the `walk(sub)`
+        # mutation this class exists to catch, 3 failures collapsed to 1, and
+        # that one came from the real tree rather than from any probe.
+        top_level = [dependency.call.__qualname__ for dependency in operation.route.dependant.dependencies]
+        assert top_level == ["get_some_wrapper"], (
+            f"the probe is not nested: {top_level}. _sub flattened the chain, so nothing below "
+            "asserts anything about transitivity"
+        )
+
         assert "get_current_tenant" in _authorisation_chain(operation)
         assert _resolves_bare_tenant_context(operation)
 
@@ -901,6 +915,31 @@ class TestTheClassificationItselfCannotDrift:
             "_AUTH_SHAPED no longer matches these names, although they are classified and mounted. "
             "The classification guard cannot see them, so a future sibling of theirs would go "
             "unreported:\n  " + "\n  ".join(unmatched)
+        )
+
+    def test_no_shape_is_an_exact_dependency_name(self):
+        """A shape must be a SUBSTRING, not a name written out in full.
+
+        The cheapest way to make the coverage rule above green for an awkward
+        future name is to paste that name into `_AUTH_SHAPED` — `"httpbearer"`
+        would have worked here instead of `"bearer"`. That passes the ceiling
+        (one more match) and leaves `test_every_auth_shaped_dependency_is_classified`
+        exactly as vacuous as before, because the filter then only enumerates
+        names somebody has already classified and can never surface a new one.
+
+        Not asserting that every shape is load-bearing, and that omission is
+        deliberate: measured, `principal`, `permission` and `role` are each
+        covered today by another substring (`mcp`, `require_`), so a
+        load-bearing rule would demand their deletion. They are there for the
+        names that do not exist yet — a `get_principal` without the `mcp` prefix,
+        a `check_permission_scope` without `require_` — which is the whole point
+        of a shape filter. Cheap insurance is not drift.
+        """
+        lowered = {name.lower() for name in set(_AUTHORISATION) | set(_NOT_AUTHORISATION)}
+        exact = sorted(shape for shape in _AUTH_SHAPED if shape.lower() in lowered)
+        assert not exact, (
+            "These _AUTH_SHAPED entries are whole dependency names rather than shapes, so the "
+            "classification guard can only ever rediscover what is already classified:\n  " + "\n  ".join(exact)
         )
 
     def test_the_shape_filter_does_not_match_everything(self):
