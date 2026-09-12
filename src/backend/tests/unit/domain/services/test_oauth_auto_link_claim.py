@@ -57,6 +57,18 @@ def _oauth_user(email_verified: bool | None) -> OAuthUserInfo:
     )
 
 
+def _service_without_local_account(oauth_user: OAuthUserInfo) -> tuple[AuthService, MagicMock]:
+    """Same wiring, but no existing local account — the registration branch."""
+    service, _ = _service(oauth_user)
+    service._user_repo.get_by_email.return_value = None
+    # `create` returns what it was handed, so the assertions read the User the
+    # production code built rather than a mock's stand-in — the point of the test
+    # is which value landed in `email_verified`.
+    service._user_repo.create.side_effect = lambda user: user
+    service._tenant_service = None
+    return service, service._user_repo
+
+
 def _service(oauth_user: OAuthUserInfo) -> tuple[AuthService, MagicMock]:
     """An AuthService whose OAuth collaborators are doubles, with a real engine.
 
@@ -180,6 +192,7 @@ class TestNoCallerPassesAConstant:
     def test_should_auto_link_is_never_called_with_a_literal(self):
         root = pathlib.Path(__file__).resolve().parents[4] / "app"
         offenders: list[str] = []
+        found = 0
 
         for path in root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -189,12 +202,34 @@ class TestNoCallerPassesAConstant:
                 func = node.func
                 if not (isinstance(func, ast.Attribute) and func.attr == "should_auto_link"):
                     continue
+                found += 1
                 for position, argument in enumerate(node.args):
                     if isinstance(argument, ast.Constant):
                         offenders.append(
                             f"{path.relative_to(root.parent)}:{node.lineno} "
-                            f"argument {position} is the literal {argument.value!r}"
+                            f"positional argument {position} is the literal {argument.value!r}"
                         )
+                # Keywords too. `should_auto_link(a, oauth_email_verified=True)`
+                # is the most natural way to reintroduce the literal while making
+                # it look deliberate, and the first version of this guard read
+                # only `node.args`, so that form walked straight past it.
+                for keyword in node.keywords:
+                    if isinstance(keyword.value, ast.Constant):
+                        offenders.append(
+                            f"{path.relative_to(root.parent)}:{node.lineno} "
+                            f"keyword {keyword.arg} is the literal {keyword.value.value!r}"
+                        )
+
+        # THE ANCHOR, and without it this test passes by finding nothing.
+        # `assert not offenders` is satisfied by an empty list, which is what a
+        # rename, a move out of `app/`, or a `parents[4]` that stops resolving all
+        # produce — `rglob` on a missing directory yields nothing and raises
+        # nothing. The two controls below parse string literals: they verify the
+        # predicate, not that the walk ever reached the real call site.
+        assert found >= 1, (
+            f"no call to should_auto_link was found under {root}. The guard examined nothing, so "
+            "its verdict means nothing — check the path, or whether the method was renamed"
+        )
 
         assert not offenders, (
             "A constant is being passed into should_auto_link. The parameter then guards nothing "
@@ -215,3 +250,35 @@ class TestNoCallerPassesAConstant:
         call = tree.body[0].value
         assert isinstance(call, ast.Call)
         assert not any(isinstance(argument, ast.Constant) for argument in call.args)
+
+
+class TestTheRegistrationPathAlsoReadsTheClaim:
+    """The other literal, and the one the AST guard does not watch.
+
+    `_register_oauth_user` set `email_verified=True` with the comment "OAuth
+    emails are considered verified" — the same assumption #1403 invalidates, one
+    branch over. It matters because the two are connected: an account created
+    that way satisfies `existing_email_verified` for **every subsequent
+    provider**, so refusing the auto-link while minting accounts that make the
+    next one succeed would have fixed the symptom and kept the mechanism.
+    """
+
+    @pytest.mark.parametrize(
+        ("claim", "expected"),
+        [
+            (True, True),
+            (False, False),
+            (None, False),
+        ],
+    )
+    def test_the_new_account_inherits_the_provider_claim(self, claim: bool | None, expected: bool):
+        service, user_repo = _service_without_local_account(_oauth_user(claim))
+
+        service.complete_oauth("acme", "code", "state")
+
+        assert user_repo.create.call_count == 1
+        created = user_repo.create.call_args.args[0]
+        assert created.email_verified is expected, (
+            f"provider claim {claim!r} produced email_verified={created.email_verified!r}; "
+            "a literal True here re-arms the auto-link for the next provider"
+        )

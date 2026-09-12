@@ -511,8 +511,30 @@ class OAuthEngine:
         # Apple: sub, email, name (nur beim ersten Login — muss gespeichert werden!)
         # OIDC: sub, email, preferred_username, name, picture
 
-    def should_auto_link(self, existing_user: User, oauth_email: str) -> bool: ...
-        # True wenn existing_user.email == oauth_email UND existing_user.email_verified == True
+    def should_auto_link(
+        self, existing_email_verified: bool, oauth_email_verified: bool | None
+    ) -> bool: ...
+        # True nur wenn BEIDE Seiten bestätigt sind (#1403).
+        #
+        # Der zweite Parameter ist der `email_verified`-Anspruch des Anbieters und
+        # hat DREI Zustände: True, False und None — None heißt, der Anbieter hat
+        # nichts gesagt. Der Anspruch ist in OIDC optional, und viele Anbieter
+        # lassen ihn weg; GitHub führt ihn gar nicht auf `/user`, sondern pro
+        # Adresse auf `/user/emails` (dafür ist der Scope `user:email` nötig).
+        #
+        # **None lehnt ab.** Schweigen als Bestätigung zu werten reproduziert
+        # genau die Lücke, gegen die der Anspruch existiert: ein falsch
+        # konfigurierter oder kompromittierter Anbieter behauptet
+        # `email = opfer@example.org` und übernimmt das Konto, sofern das lokale
+        # Konto bestätigt ist — was jedes regulär registrierte ist. Der Aufrufer
+        # landet stattdessen auf dem vorhandenen Weg „mit Passwort anmelden, dann
+        # verknüpfen".
+        #
+        # Bis #1403 reichte der Aufrufort ein literales `True` für den zweiten
+        # Parameter, der Anspruch wurde also nie gelesen. Dieselbe Annahme stand
+        # im Neuanlage-Pfad: ein über OAuth erzeugtes Konto galt unbesehen als
+        # bestätigt und erfüllte damit die erste Bedingung für jeden späteren
+        # Anbieter.
 ```
 
 **`LoginThrottleEngine`** — Brute-Force-Schutz (pure Logik):

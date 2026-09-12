@@ -174,34 +174,65 @@ class OAuthEngine:
 
             # `/user` carries NO verification flag — GitHub keeps it on
             # `/user/emails`, one entry per address with its own `verified`
-            # boolean (#1403). So the address list is fetched unconditionally
-            # now, not only when the profile email is private: without it the
-            # claim would be `None` for every GitHub caller whose email is
-            # public, which under the "absent means unverified" rule would
-            # switch auto-linking off for most of them. The information exists
-            # and the token already grants it.
+            # boolean (#1403). The list is fetched unconditionally, not only when
+            # the profile email is private: without it the claim is `None` for
+            # every GitHub caller whose address is public, and under the
+            # "absent means unverified" rule that switches auto-linking off for
+            # most of them.
             #
-            # A failure here must not break sign-in: an account that is ALREADY
-            # linked logs in without ever reaching the auto-link branch, and the
-            # branch that does reach it degrades to "not verified", which is the
-            # safe direction. So this is caught rather than raised.
+            # **This request needs the `user:email` scope, and the default
+            # provider configuration does not grant it.**
+            # `OidcProviderConfig.scopes` defaults to
+            # `["openid", "email", "profile"]`, which GitHub ignores, so a
+            # provider registered without an explicit `user:email` answers 403
+            # here on every sign-in. The consequence is bounded and one-directional
+            # — no claim, therefore no auto-link — but it is installation-wide and
+            # invisible outside this log line, which is why the line names the
+            # scope rather than only the error.
             verified: bool | None = None
             try:
                 email_resp = client.get("https://api.github.com/user/emails", headers=headers)
                 email_resp.raise_for_status()
-                emails = email_resp.json()
+                entries = email_resp.json()
+
+                # SHAPE-CHECKED, not assumed. `raise_for_status` guards the status
+                # code only: a 200 carrying an error envelope (`{"message": ...}`,
+                # a GHE proxy page, a JSON `null`) would reach the loops below,
+                # and iterating a dict yields `str` keys whose `.get` raises
+                # `AttributeError` — a class the first version of this `except`
+                # did not name. That exception escapes `extract_user_info`, which
+                # `complete_oauth` calls BEFORE the existing-link lookup, so it
+                # would have broken sign-in for every GitHub user including those
+                # already linked. The commit that introduced this block claimed
+                # the opposite in its own message.
+                if not isinstance(entries, list):
+                    raise TypeError(f"/user/emails returned {type(entries).__name__}, expected a list")
+                addresses = [entry for entry in entries if isinstance(entry, dict)]
+
                 if not email:
-                    primary = next((e for e in emails if e.get("primary")), None)
-                    chosen = primary if primary else (emails[0] if emails else None)
+                    primary = next((entry for entry in addresses if entry.get("primary")), None)
+                    chosen = primary if primary is not None else (addresses[0] if addresses else None)
                     if chosen is not None:
-                        email = chosen["email"]
-                        verified = bool(chosen.get("verified", False))
+                        email = chosen.get("email")
+                        verified = _as_optional_bool(chosen.get("verified"))
                 else:
-                    match = next((e for e in emails if e.get("email") == email), None)
+                    match = next((entry for entry in addresses if entry.get("email") == email), None)
                     if match is not None:
-                        verified = bool(match.get("verified", False))
-            except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
-                logger.warning("github_email_verification_unavailable", error=str(exc))
+                        verified = _as_optional_bool(match.get("verified"))
+            except (httpx.HTTPError, TypeError, AttributeError, KeyError, IndexError, ValueError) as exc:
+                logger.warning(
+                    "github_email_verification_unavailable",
+                    error=str(exc),
+                    hint="the provider configuration needs the `user:email` scope for GitHub",
+                )
+
+        # A verification gap degrades to "not verified"; NO ADDRESS AT ALL is a
+        # different failure and must not wear the same clothes. `OAuthUserInfo.email`
+        # is a required `str`, so letting `None` through here raises a pydantic
+        # ValidationError from the model constructor — a 500 far from its cause,
+        # under a log line that calls it a verification problem.
+        if not email:
+            raise ValueError("GitHub returned no usable email address for this account.")
 
         return OAuthUserInfo(
             provider=AuthProviderType.GITHUB,

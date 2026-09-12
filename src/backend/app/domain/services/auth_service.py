@@ -872,12 +872,29 @@ class AuthService:
         )
 
     def _register_oauth_user(self, oauth_user: OAuthUserInfo) -> User:
-        """Create a new user from OAuth info (no password)."""
+        """Create a new user from OAuth info (no password).
+
+        **The provider's claim decides `email_verified`, not a literal (#1403).**
+        This line read `email_verified=True  # OAuth emails are considered
+        verified` — the same assumption the auto-link path was repaired for, one
+        branch over, and the one the AST guard does not watch because it only
+        follows `should_auto_link`.
+
+        It matters because the two are connected: an account created here with
+        `email_verified=True` from an address the provider never asserted then
+        satisfies `existing_email_verified` for **every subsequent provider**.
+        Refusing the auto-link while minting accounts that make the next one
+        succeed would have fixed the symptom and kept the mechanism.
+
+        `is True` and not a truthiness test: `None` means the provider said
+        nothing, and under the decision recorded on `should_auto_link` silence is
+        not an assertion.
+        """
 
         user = User(
             email=oauth_user.email,
             display_name=oauth_user.display_name,
-            email_verified=True,  # OAuth emails are considered verified
+            email_verified=oauth_user.email_verified is True,
             avatar_url=oauth_user.avatar_url,
         )
         created = self._user_repo.create(user)
