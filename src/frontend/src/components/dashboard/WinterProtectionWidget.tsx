@@ -1,3 +1,4 @@
+import { usePendingWidget } from '@/components/dashboard/DashboardDataContext';
 import { useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -116,6 +117,8 @@ export default function WinterProtectionWidget() {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
+  // Self-fetching like the weather widget, and outside the aggregate flag for the
+  // same reason (#1373).
   const { overview, overviewLoading, overviewError } = useAppSelector(
     (s) => s.overwinteringProfiles,
   );
@@ -136,6 +139,12 @@ export default function WinterProtectionWidget() {
   const redPlants = useMemo(() => overview?.red_plants ?? [], [overview]);
 
   const total = overview?.total ?? 0;
+
+  // Registered on the SAME expression the placeholder uses, not on the bare
+  // `overviewLoading`. A re-mount with cached data re-dispatches the fetch while
+  // the widget keeps rendering its content, and the bare flag would announce
+  // "loading" with no placeholder standing anywhere (#1373).
+  usePendingWidget('winter_protection', overviewLoading && total === 0);
 
   const showAllClear = total > 0 && redPlants.length === 0;
 

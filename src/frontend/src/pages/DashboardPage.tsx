@@ -23,7 +23,7 @@ import LoadingStatus from '@/components/common/LoadingStatus';
 import PageTitle from '@/components/layout/PageTitle';
 import { kamiStateDashboardWelcome } from '@/assets/brand/illustrations';
 import DashboardReadonlyGrid from '@/components/dashboard/DashboardReadonlyGrid';
-import { DashboardDataProvider } from '@/components/dashboard/DashboardDataContext';
+import { DashboardDataProvider, useDashboardPending } from '@/components/dashboard/DashboardDataContext';
 import WidgetConfigDialog from '@/components/dashboard/WidgetConfigDialog';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
 import { fetchWidgetCatalog, fetchAggregated } from '@/store/slices/dashboardSlice';
@@ -51,6 +51,28 @@ import type { DashboardLayout, DashboardWidgetInstance, WidgetPlacement } from '
 const DashboardEditGrid = lazy(() => import('@/components/dashboard/DashboardEditGrid'));
 
 type Breakpoint = 'lg' | 'md' | 'sm';
+
+/**
+ * The dashboard's single loading announcement, as a child of
+ * `DashboardDataProvider` rather than inline (#1373).
+ *
+ * It has to be a child: a component cannot read a context it renders itself, and
+ * the signal it needs now includes the self-fetching widgets that register
+ * through `usePendingWidget`. Inline, it could only ever see `aggregatedLoading`
+ * — which is exactly the defect, the region going empty while two placeholders
+ * still stand.
+ */
+function DashboardLoadingAnnouncement() {
+  const { t } = useTranslation();
+  const active = useDashboardPending();
+  return (
+    <LoadingStatus
+      active={active}
+      label={t('dashboard.loading.announcement')}
+      data-testid="dashboard-loading-status"
+    />
+  );
+}
 
 export default function DashboardPage() {
   const { t } = useTranslation();
@@ -337,47 +359,28 @@ export default function DashboardPage() {
             Issue #1337 item 1 — the dashboard's single loading announcement.
 
             Every other loading placeholder in this frontend pairs its `aria-busy`
-            wrapper with its own `LoadingStatus` live region (#1324/#1329). That
-            shape does not scale here: mid-load the grid stands with five
-            aggregated placeholders at once, so a region per placeholder would be
-            five concurrent polite regions all saying "loading" — worse than the
-            silence it replaces. The decision taken instead:
+            wrapper with its own `LoadingStatus` live region (#1324/#1329). Five
+            regions announcing the same FETCH is chatter, so the dashboard has
+            exactly one loading announcer, mounted here.
 
-            - **One region, owned by this page**, above the edit-mode ternary so
-              the toggle cannot remount it, and inside the provider so it and the
-              placeholders read one and the same `aggregatedLoading`.
-            - **It speaks for the aggregate**, which is what the placeholders are
-              waiting for — including on a refresh, where only the aggregate is
-              refetched and a catalogue-driven region would stay silent.
-            - **Empty, not unmounted, when settled** (`active`): a live region
-              must exist before its content changes for the change to be
-              announced, so a second load is not swallowed.
-            - **A widget finishing early changes nothing.** The aggregate is one
-              round trip for all widget keys, so the text is written once when
-              the load starts and once when it ends.
+            One *loading* announcer, not one region: the edit-mode move/resize
+            announcer above is a second `role="status"` and stays separate on
+            purpose. The two have disjoint sources and lifetimes, and merging them
+            would let one message silently overwrite the other when a layout edit
+            and a refetch land together. `DashboardPageLoadingAnnouncement.test.tsx`
+            pins that separation through its `speakingRegions` helper.
 
-            The page keeps a *second* status region above (the edit-mode
-            move/resize announcements). Two regions are deliberate here: they
-            have disjoint sources and disjoint lifetimes, and merging them into
-            one node would mean one message silently overwriting the other when
-            a layout edit and a refetch land together. What must be unique is the
-            *loading* announcer, and this is it — no widget announces its own
-            load, and no settled widget announces its empty state.
+            **#1373 closed the gap this comment used to describe as open.** The two
+            self-fetching widgets — `weather_forecast` and `winter_protection` —
+            are no longer outside the signal: they register through
+            `usePendingWidget`, and `DashboardLoadingAnnouncement` reads the
+            combined value. The region now stays active until every visible
+            placeholder is gone, which is what it always claimed.
 
-            **Known gap (#1373):** two widgets fetch their own data and are not
-            represented by this flag — `weather_forecast` (bare `Skeleton`s, no
-            `aria-busy`, no announcement) and `winter_protection` (a labelled
-            `CircularProgress`, so named but not announced). Both are default
-            beginner widgets, so on a default dashboard this region goes empty
-            while their placeholders still stand. Covering them needs a way for a
-            self-fetching widget to register into the page-level signal, which is
-            a data-layer decision rather than a markup fix.
+            The per-widget payload flag stays separate from that combined value on
+            purpose; see the note in `DashboardDataContext`.
           */}
-          <LoadingStatus
-            active={aggregatedLoading}
-            label={t('dashboard.loading.announcement')}
-            data-testid="dashboard-loading-status"
-          />
+          <DashboardLoadingAnnouncement />
           {editMode ? (
             <Suspense fallback={<Skeleton variant="rounded" height={400} />}>
               <DashboardEditGrid

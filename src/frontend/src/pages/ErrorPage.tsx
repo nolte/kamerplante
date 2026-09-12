@@ -31,9 +31,19 @@ const illustrationMap: Record<number, string> = {
 export interface ErrorPageProps {
   statusCode?: number;
   onRetry?: () => void;
+  /**
+   * Whether this page owns the `main` landmark. Default `true`, which is right for
+   * a whole-page route that replaces the layout.
+   *
+   * Pass `false` when rendering INSIDE a layout that already provides one —
+   * `MainLayout` renders `component="main"`, so a nested `role="main"` produces
+   * two `main` landmarks and an axe `landmark-unique` finding on the nightly a11y
+   * lane. #1390 renders this component inside that layout on two admin routes.
+   */
+  landmark?: boolean;
 }
 
-export default function ErrorPage({ statusCode = 500, onRetry }: ErrorPageProps) {
+export default function ErrorPage({ statusCode = 500, onRetry, landmark = true }: ErrorPageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
 
@@ -47,7 +57,7 @@ export default function ErrorPage({ statusCode = 500, onRetry }: ErrorPageProps)
     <Box
       sx={{ textAlign: 'center', py: { xs: 4, md: 8 }, px: 2 }}
       data-testid="error-page"
-      role="main"
+      role={landmark ? 'main' : undefined}
     >
       <PageTitle title={title} />
 

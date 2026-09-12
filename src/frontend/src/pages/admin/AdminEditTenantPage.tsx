@@ -41,7 +41,8 @@ import {
   removeTenantMember,
   changeTenantMemberRole,
 } from '@/api/endpoints/adminPlatform';
-import { parseApiError } from '@/api/errors';
+import { isApiError, parseApiError } from '@/api/errors';
+import ErrorPage from '@/pages/ErrorPage';
 import type { AdminTenant, AdminTenantMember, AdminUser, TenantRole } from '@/api/types';
 
 const GRID_2COL = {
@@ -58,6 +59,8 @@ export default function AdminEditTenantPage() {
 
   const [tenant, setTenant] = useState<AdminTenant | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<number | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
   // Form
   const [name, setName] = useState('');
@@ -82,8 +85,16 @@ export default function AdminEditTenantPage() {
   useEffect(() => {
     if (!key) return;
     setLoading(true);
+    setLoadError(null);
+    // A per-run flag, because the effect re-runs on `key` and on retry. Before
+    // the `.catch` existed a late rejection from a superseded request was merely
+    // unhandled; now it would call `setLoadError` and swap a healthy, fully
+    // loaded page for an error state belonging to a record the operator has
+    // already navigated away from. Same pattern as `useSiteWeatherForecast`.
+    let cancelled = false;
     fetchAdminTenants()
       .then((tenants) => {
+        if (cancelled) return;
         const found = tenants.find((t) => t.key === key);
         if (found) {
           setTenant(found);
@@ -92,8 +103,28 @@ export default function AdminEditTenantPage() {
           setIsActive(found.is_active);
         }
       })
-      .finally(() => setLoading(false));
-  }, [key]);
+      // WITHOUT THIS `.catch` EVERY REJECTION LOOKED LIKE "NOT FOUND" (#1390).
+      // A 403, a 500, a dropped connection and a rate limit all left `tenant` at
+      // `null`, and the render below falls through to the not-found alert — so an
+      // operator was told a record does not exist while it sits there untouched.
+      // The rejection was also unhandled, surfacing as an unhandled promise
+      // rejection rather than anywhere a user or an operator could see it.
+      //
+      // `<RequirePlatformAdmin>` (#1336) removed the 403-for-a-non-admin case by
+      // not mounting the page at all for those callers. It does not touch the
+      // rest: a platform admin who hits a 500 or loses the network still read
+      // "not found" until this.
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setLoadError(isApiError(err) ? err.statusCode : 0);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, reloadToken]);
 
   // Load members
   const loadMembers = useCallback(async () => {
@@ -190,6 +221,22 @@ export default function AdminEditTenantPage() {
   };
 
   if (loading) return <LoadingSkeleton variant="form" />;
+  // THREE ANSWERS, NOT ONE (#1390). A failed request is not a missing record, and
+  // only the third of these is genuinely "not found": the list came back and the
+  // key was not in it.
+  if (loadError !== null) {
+    // `0` means the failure carried no status at all — a dropped connection, DNS,
+    // a blocked request. Rendering that as 500 tells an offline operator the
+    // server failed, which is a different and wrong diagnosis. 503 is the closest
+    // honest answer: the service could not be reached.
+    return (
+      <ErrorPage
+        statusCode={loadError === 0 ? 503 : loadError}
+        onRetry={() => setReloadToken((n) => n + 1)}
+        landmark={false}
+      />
+    );
+  }
   if (!tenant) return <Alert severity="error">{t('pages.admin.tenantNotFound')}</Alert>;
 
   return (
