@@ -10,18 +10,44 @@ Prüfungen im Baum.
     vor dem Merge wieder entfernt, weil es per `git add -A` ungeprüft mitgefahren
     war. Es kommt hier mit der Prüfung zurück, die damals ausfiel.
 
-    **Stichprobe der tragenden Zahlen, gegen die GitHub-API gemessen:** alle neun
-    Titel-Ketten in K1 und alle elf zitierten Titel in K2 sind wörtlich korrekt.
-    `#1353` trägt die genannten 37 von 243 im Körper. 43 geschlossene Issues
-    führen überhaupt eine Issue-Nummer im Titel; die 23 in K1 sind die Teilmenge,
-    die damit einen *Vorgängerdefekt* benennt und nicht eine Automatik-Meldung.
+    **Was der Messung standhält:** alle neun Titel-Ketten in K1 und alle
+    vierzehn zitierten Titel in K2 bis K5 sind wörtlich korrekt. Die Tabellen in
+    §1 sind auf dem 325er-Stand exakt reproduzierbar, Median 0,72 d / p90 6,25 d
+    eingeschlossen; gruppiert wird nach `createdAt`, was dort nicht dabeisteht.
+    `#1353` trägt „243 write routes, 37 of which" im Körper. `#836` schloss am
+    2026-07-28. Die Reichweiten-Tabelle des Begleitdokuments stimmt im Kern.
 
-    **Abweichung durch Zeitablauf, und nur dort:** die Kopfzahlen in §1 sind vom
-    2026-09-11. Am 2026-09-12 sind es 327 geschlossene Issues statt 325
-    (324 `COMPLETED` / 3 `NOT_PLANNED` statt 322/3) und 122 `bug` statt 121;
-    `security` steht unverändert bei 47. Die Zahlen bleiben so stehen, wie sie
-    gemessen wurden — ein Datenstand mit Datum ist nachvollziehbar, ein
-    fortlaufend überschriebener nicht.
+    **Vier Zahlen waren schon beim Schreiben falsch, nicht erst durch Zeitablauf:**
+
+    - **§K1 „23 geschlossene Issues"** ist mit keinem angegebenen Prädikat
+      nachvollziehbar. 43 geschlossene Issues führen überhaupt eine Issue-Nummer
+      im Titel; davon sind fünf Automatik-Meldungen, nach der genannten Regel
+      blieben also 38. Zählt man nur die Issues der K1-Liste, deren eigener Titel
+      einen Vorgänger nennt, sind es 16. Die 23 ist als gemessen präsentiert und
+      ist es nicht.
+    - **§U1 „395 Zeilen"** für `test_write_route_gates.py` — heute 981, weil
+      PR #1411 den Sweep aus #1402 eingebaut hat.
+    - **§S5 verweist auf ein Verzeichnis `memory/`**, das in diesem Repository
+      nicht existiert. Der Bestand liegt außerhalb des Repos unter
+      `~/.claude/projects/<encoded-cwd>/memory/`.
+    - Das Begleitdokument trägt drei weitere; sie stehen in dessen eigenem
+      Vermerk.
+
+    **Und die tragende Aussage von §U1 ist seit dem 2026-09-12 erledigt:** die
+    Backend-Wächter liegen nicht mehr in der einzigen nicht erzwungenen Lane.
+    Wer nur dieses Dokument liest, arbeitet M1 erneut.
+
+    **Zahlen, die durch Zeitablauf gewandert sind.** §1 ist vom 2026-09-11. Am
+    2026-09-12 sind es 328 geschlossene Issues statt 325, 122 `bug` statt 121 und
+    **48** `security` statt 47. Eine frühere Fassung dieses Vermerks schrieb
+    „`security` steht unverändert bei 47" — falsch, und widerlegt vom
+    Nachbardokument: #1404, dort als M1-Erfolg gemeldet, trägt selbst das Label
+    `security` und ist die 48.
+
+    Die Zahlen im Körper bleiben so stehen, wie sie gemessen wurden. Ein
+    Datenstand mit Datum ist nachvollziehbar, ein fortlaufend überschriebener
+    nicht — was die vier Fehler oben nicht entschuldigt, denn die waren am
+    Stichtag schon falsch.
 
     Drei Maßnahmen dieses Dokuments sind als #1404, #1405 und #1406 gefilt und
     verwiesen bis heute auf eine Quelle, die nicht im Repository lag.

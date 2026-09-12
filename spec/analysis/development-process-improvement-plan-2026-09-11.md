@@ -5,12 +5,47 @@ Begleitdokument zu `development-process-review-2026-09-11.md`. Stand 2026-09-11.
 !!! info "Stand der Umsetzung am 2026-09-12"
     **M1 ist umgesetzt und geschlossen** (#1404, PR #1411): die Wächter-Lane
     `Write-route and tree guards` ist ein erzwungener Check auf `develop`,
-    gemessen 41 s, und die Falsifizierung lief als echte Wegwerf-PR — eine
-    ungegatete Schreibroute zusammen mit einer reinen Frontend-Änderung machte
-    sie rot.
+    gemessen 41 s.
 
-    Zwei Dinge, die dieser Plan so nicht vorhergesehen hat, und beide gehören
-    zur Maßnahme:
+    **Die Falsifizierung, und ihre eigene Geschichte.** §M1 verlangt zwei Dinge:
+    der neue Check muss rot sein **und** `mergeable_state` blockiert. Der erste
+    Versuch belegte nur die erste Hälfte — er lief auf einem Branch, zu dem nie
+    eine Pull-Request existierte (`event: push`, `pull_requests: 0`), und eine
+    frühere Fassung dieses Vermerks nannte ihn trotzdem „eine echte Wegwerf-PR".
+    Nachgeholt als PR #1417: der Check meldet `failure`, `mergeStateStatus` ist
+    `BLOCKED`. Beide Hälften liegen damit vor.
+
+    **M2, M3, M4 und M7 sind ebenfalls erledigt**, in `nolte/claude-shared` und
+    noch am 2026-09-11, also vor diesem Dokument im Repository:
+
+    | Maßnahme | Commit | Artefakt |
+    |---|---|---|
+    | M2 + M4 | `4ef3e97` (#576) | erzwungene Lane je Testebene, `## Class sweep` in `pull-request-workflow/en.md` |
+    | M3 | `bf626ff` (#578) | `spec/project/defect-class-guards/` |
+    | M7 | `46bac9a` (#579) | Skill `guard-coverage-check` samt Scanner |
+
+    Eine frühere Fassung dieses Vermerks schrieb nur, sie „liegen bei
+    `claude-shared` bzw. `pre-commit-hooks`" — in einem Block über den
+    Umsetzungsstand liest sich das als offen, und wer es so las, hätte vier
+    fertige Maßnahmen neu eingeplant.
+
+    **Offen bleiben M5 (#1405) und M6 (#1406).**
+
+    **Drei Zahlen in diesem Dokument waren schon beim Schreiben falsch:**
+
+    - **§M2 „neunzehn Monate"** — das Repository wurde am 2026-02-25 angelegt,
+      also 6,5 Monate. Die Zahl überzeichnet die Begründung gegenüber dem
+      Portfolio.
+    - **§M6 „13 `check-jsonschema`-Hooks, jeweils eine benannte Datei"** — es sind
+      zwölf mit `files:`-Muster, und eines davon ist ein Glob über neun
+      `plant_info*`-Dateien, keine benannte Datei. Das Opt-in-Argument trägt
+      weiterhin; die Zahl und die Nebenaussage nicht. **#1406 hat den Fehler
+      übernommen.**
+    - **§M5 „16 Agenten und 3 Skills"** — am Stichtag waren es 15 Agenten und
+      3 Skills.
+
+    **Zwei Dinge, die dieser Plan nicht vorhergesehen hat**, und beide gehören zur
+    Maßnahme:
 
     - **M1 war ohne die Sweep-Erweiterung aus #1402 nicht umsetzbar.** Das
       Abnahmekriterium von #1404 kam gegen den damaligen Sweep **grün** zurück,
@@ -21,10 +56,8 @@ Begleitdokument zu `development-process-review-2026-09-11.md`. Stand 2026-09-11.
       von der Maßnahme gegen K2.
     - **„Ein Job in `backend.yml` ohne `paths:`-Filter" ist nicht baubar.** `on:`
       gilt workflow-weit; ein Job kann die Trigger seines Workflows nicht
-      aufweiten. Die Lane ist eine eigene Datei.
-
-    M5 (#1405) und M6 (#1406) sind offen. M2, M3, M4 und M7 liegen laut der
-    Reichweiten-Tabelle in §4 bei `claude-shared` bzw. `pre-commit-hooks`.
+      aufweiten. Die Lane ist eine eigene Datei. Deren `push`-Trigger berichtet
+      allerdings nicht auf Fork-PRs — vermerkt im Kopf von `backend-guards.yml`.
 
 Der Plan verortet jede Maßnahme in dem Portfolio-Repository, das die Fähigkeit
 besitzt, beschreibt die Umsetzung, und benennt für jede einen
