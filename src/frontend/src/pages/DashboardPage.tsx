@@ -360,8 +360,15 @@ export default function DashboardPage() {
 
             Every other loading placeholder in this frontend pairs its `aria-busy`
             wrapper with its own `LoadingStatus` live region (#1324/#1329). Five
-            regions announcing the same fetch is chatter, so the dashboard has
-            exactly ONE, mounted here.
+            regions announcing the same FETCH is chatter, so the dashboard has
+            exactly one loading announcer, mounted here.
+
+            One *loading* announcer, not one region: the edit-mode move/resize
+            announcer above is a second `role="status"` and stays separate on
+            purpose. The two have disjoint sources and lifetimes, and merging them
+            would let one message silently overwrite the other when a layout edit
+            and a refetch land together. `DashboardPageLoadingAnnouncement.test.tsx`
+            pins that separation through its `speakingRegions` helper.
 
             **#1373 closed the gap this comment used to describe as open.** The two
             self-fetching widgets — `weather_forecast` and `winter_protection` —

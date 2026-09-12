@@ -99,8 +99,8 @@ git worktree add -b "$branch" "$dest" origin/develop
 # plan a MUST and the stub a SHOULD for exactly this helper: the gate is
 # convention-driven, no hook aborts work when the plan is absent, so the only
 # thing that makes authoring it the path of least resistance is finding the
-# headings already there. Written once, never overwritten — a worktree re-entered
-# after a crash must find the plan it left, which is the case the gate exists for.
+# headings already there. Written once, never overwritten; the existence check
+# below says exactly what that does and does not cover.
 #
 # `.resume/` is gitignored, so this is a worktree-local working aid and never
 # competes with the branch's real changes for review attention. The
