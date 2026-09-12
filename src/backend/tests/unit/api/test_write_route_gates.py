@@ -37,7 +37,6 @@ import pytest
 from fastapi.params import Depends as DependsParam
 
 from app.api.v1.router import api_router
-from app.common.auth import get_current_tenant, get_current_user
 from app.common.enums import TenantRole
 from app.common.exceptions import ForbiddenError
 from app.domain.models.tenant_context import TenantContext
@@ -252,7 +251,6 @@ _AUTHORISATION: frozenset[str] = frozenset(
         "require_admin_scope.<locals>._check",
         "require_attachment_permission.<locals>._dependency",
         "get_mcp_principal",
-        "get_mcp_authenticator",
     }
 )
 
@@ -265,8 +263,6 @@ _ROLE_GATES: frozenset[str] = frozenset(
         "require_platform_admin",
         "_require_platform_admin",
         "require_attachment_permission.<locals>._dependency",
-        "get_mcp_principal",
-        "get_mcp_authenticator",
     }
 )
 
@@ -292,6 +288,14 @@ _NOT_AUTHORISATION: dict[str, str] = {
     "get_active_tenant_key": "resolves the header slug; the refusal is the get_current_user beneath it",
     "get_active_tenant_context": "same - authorisation is the get_current_user it depends on",
     "get_mcp_dispatcher": "infrastructure; dispatches after get_mcp_principal has decided",
+    # A FACTORY, not a gate, and it was in `_AUTHORISATION` for one commit — the
+    # same mistake the substring `"mcp_"` made, repeated by hand after the
+    # substrings were removed. `dependencies.py:879` constructs
+    # `McpAuthenticator(...)` and refuses nobody; the refusal is
+    # `authenticator.authenticate(...)`, called inside the handler. Its sibling
+    # `get_task_entity_guard` has the same shape and was correctly left out,
+    # which is what made the inconsistency visible.
+    "get_mcp_authenticator": "constructs the authenticator; the handler's authenticate() call is the refusal",
     "get_mcp_session_store": "infrastructure",
 }
 
@@ -316,6 +320,18 @@ _PUBLIC_ALLOWLIST: dict[str, str] = {
     "auth.router.redeem_device_pairing": "authorised by the pairing code",
     "privacy.router.confirm_email_change": "authorised by the emailed token (REQ-025)",
     "ki_assistent.public_router.public_ask": "REQ-031 light-mode probe, published on purpose",
+    # Authenticates from the API key in the REQUEST BODY, inside the handler, the
+    # way `login` authenticates from a password — so it carries no transport
+    # credential and never will. It was previously exempt by accident:
+    # `get_mcp_authenticator` was miscounted as authorisation and this is the one
+    # live route whose only `_AUTHORISATION` member it was. The exemption is the
+    # same; what changed is that it is now written down.
+    #
+    # Not unguarded: `require_mcp_enabled` 404s the route when MCP is off, the
+    # auth rate limiter applies per IP, and REQ-033 SEC-003 collapses the
+    # valid-non-service case into the same generic 401 so it cannot be used as an
+    # oracle.
+    "auth.router.validate_service_account": "authenticates from the key in the body, like login",
 }
 
 
@@ -493,39 +509,87 @@ class TestAdminWriteGates:
             assert len(reason) >= 12, f"{route_id} carries no usable reason: {reason!r}"
 
 
+def _stub_operation(path: str, *dependency_names: str, module: str = "app.api.v1.invented.router") -> Operation:
+    """An Operation whose effective chain is exactly `dependency_names`.
+
+    The probes below build a stub `route.dependant` rather than a handler
+    signature, because the sweeps read the effective chain now. A probe built
+    from a signature has `route=None`, `_authorisation_chain` returns `[]` for
+    it, and every predicate under test answers the same way regardless of what
+    it does — which is how the first version of this class came to leave the
+    admin sweep provably unguarded (see the docstring below).
+    """
+
+    class _Call:
+        def __init__(self, name: str) -> None:
+            self.__qualname__ = name
+
+    subs = [type("Sub", (), {"call": _Call(name), "dependencies": []})() for name in dependency_names]
+
+    class _Route:
+        dependant = type("D", (), {"dependencies": subs})()
+
+    def _handler() -> None: ...
+
+    _handler.__module__ = module
+    return Operation("POST", path, _handler, _Route())
+
+
 class TestTheGuardCanFail:
     """Falsification, in-process: an assertion nobody has seen fail proves nothing.
 
-    Each of these builds the same comparison the tests above make, against an
-    operation known to violate it, and asserts the comparison catches it. Without
-    them a typo in a selector — a prefix that matches nothing, a dependency
-    identity that is never equal — leaves every test above green and silent.
+    **These probes were wrong for exactly one commit and the way they were wrong
+    is the point of the class.** When the two sweeps moved from `inspect.signature`
+    to the effective chain, these kept asserting the signature expressions — a
+    different statement from the one the sweeps now make. Measured by mutation at
+    the time: replacing the body of `_resolves_bare_user` with `return False`
+    left **all 84 tests in this file green**. `_ADMIN_ALLOWLIST` is empty by
+    design, so the admin sweep had no other control either, and a typo making it
+    constant-`False` would have shipped in silence.
+
+    Every probe below therefore drives the predicate the sweep drives, by name.
     """
 
-    def test_an_ungated_tenant_route_would_be_reported(self):
-        def _handler(ctx=DependsParam(dependency=get_current_tenant)):  # pragma: no cover
-            return None
-
-        operation = Operation("POST", "/api/v1/t/{tenant_slug}/invented", _handler)
-        assert operation.dependencies.get("ctx") is get_current_tenant
+    def test_a_bare_tenant_route_is_reported(self):
+        operation = _stub_operation("/api/v1/t/{tenant_slug}/invented", "get_current_tenant")
+        assert _resolves_bare_tenant_context(operation)
         assert operation.id not in _TENANT_ALLOWLIST
 
-    def test_an_ungated_admin_route_would_be_reported(self):
-        def _handler(_current_user=DependsParam(dependency=get_current_user)):  # pragma: no cover
-            return None
+    def test_a_role_gated_tenant_route_is_not_reported(self):
+        """The control: a predicate that reports everything is as useless as one that reports nothing."""
+        operation = _stub_operation(
+            "/api/v1/t/{tenant_slug}/invented",
+            "get_current_tenant",
+            "require_permission.<locals>._check",
+        )
+        assert not _resolves_bare_tenant_context(operation)
 
-        operation = Operation("POST", "/api/v1/admin/invented", _handler)
-        assert get_current_user in operation.dependencies.values()
+    def test_a_bare_admin_route_is_reported(self):
+        operation = _stub_operation("/api/v1/admin/invented", "get_current_user")
+        assert _resolves_bare_user(operation)
         assert operation.id not in _ADMIN_ALLOWLIST
 
-    def test_a_gated_route_would_not_be_reported(self):
-        """The control: a selector that reports everything is as useless as one that reports nothing."""
+    def test_a_platform_admin_route_is_not_reported(self):
+        """The admin sweep's only control — `_ADMIN_ALLOWLIST` is empty, so nothing else drives it."""
+        operation = _stub_operation("/api/v1/admin/invented", "get_current_user", "require_platform_admin")
+        assert not _resolves_bare_user(operation)
 
-        def _handler(ctx=DependsParam(dependency=lambda: None)):  # pragma: no cover
-            return None
+    def test_an_unauthenticated_route_is_reported_by_the_third_question(self):
+        operation = _stub_operation("/api/v1/invented", "get_fertilizer_service")
+        assert not _resolves_authorisation(operation)
 
-        operation = Operation("POST", "/api/v1/t/{tenant_slug}/invented", _handler)
-        assert operation.dependencies.get("ctx") is not get_current_tenant
+    def test_the_three_predicates_disagree_on_the_same_operation(self):
+        """They ask different questions, and a rewrite that collapsed them would show here.
+
+        A tenant route behind bare `get_current_tenant`: reported by sweep 1,
+        satisfied by sweep 3, untouched by sweep 2. If any two of these ever
+        answer identically for every input, two of the three are redundant and one
+        of them is not doing the job its name claims.
+        """
+        operation = _stub_operation("/api/v1/t/{tenant_slug}/invented", "get_current_tenant")
+        assert _resolves_bare_tenant_context(operation)
+        assert _resolves_authorisation(operation)
+        assert not _resolves_bare_user(operation)
 
 
 @pytest.mark.parametrize("route_id", sorted(_TENANT_ALLOWLIST) + sorted(_ADMIN_ALLOWLIST))
@@ -751,7 +815,51 @@ class TestTheClassificationItselfCannotDrift:
         for name, reason in _NOT_AUTHORISATION.items():
             assert len(reason) >= 12, f"{name} carries no usable reason: {reason!r}"
 
-    def test_the_shape_filter_actually_matches_something(self):
-        """A filter that matches nothing would make the guard above vacuous."""
-        assert any(shape in "require_platform_admin" for shape in _AUTH_SHAPED)
-        assert not any(shape in "get_fertilizer_service" for shape in _AUTH_SHAPED)
+    def test_the_shape_filter_matches_a_realistic_share_of_the_live_inventory(self):
+        """Anchored to the app the guard reads, not to two literals.
+
+        The first version asserted against the strings `"require_platform_admin"`
+        and `"get_fertilizer_service"`. Narrowing `_AUTH_SHAPED` to `("require_",)`
+        would still match that literal while the guard above quietly stopped
+        scanning most of the inventory — both tests green, the classification
+        vacuous. A floor over the real dependency names cannot be satisfied that
+        way. Measured today: 20 of roughly 90 distinct names match.
+        """
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        matched = {name for name in seen if any(shape in name.lower() for shape in _AUTH_SHAPED)}
+        assert len(matched) >= 12, (
+            f"_AUTH_SHAPED matches only {len(matched)} of {len(seen)} dependency names mounted on write "
+            "routes. It has been narrowed to the point where the classification guard scans almost "
+            f"nothing: {sorted(matched)}"
+        )
+        assert len(matched) < len(seen), (
+            "_AUTH_SHAPED matches every dependency name, so the classification guard would demand a "
+            "decision on every service and repository in the tree. Too wide is also a failure."
+        )
+
+    def test_every_non_authorisation_entry_is_still_mounted(self):
+        """The obsolescence rule, applied to the vocabulary as well as the routes.
+
+        This file's central argument is that an allowlist without one rots.
+        `_NOT_AUTHORISATION` is an allowlist — it says "this name looks like a
+        gate and is not" — and until this test it had no such rule, so an entry
+        for a dependency deleted from the app would have sat there indefinitely,
+        excusing nothing and reading like a decision.
+
+        A generous floor rather than an exact match: some entries are classified
+        against names that appear on READ routes only, and the sweeps walk write
+        routes. What must not happen is the set drifting wholesale out of the
+        tree.
+        """
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        mounted = {name for name in _NOT_AUTHORISATION if name in seen}
+        assert len(mounted) >= len(_NOT_AUTHORISATION) // 2, (
+            "More than half of _NOT_AUTHORISATION names no longer appear on any mounted write route. "
+            "The set has drifted from the app it describes:\n  " + "\n  ".join(sorted(set(_NOT_AUTHORISATION) - seen))
+        )

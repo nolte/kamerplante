@@ -80,6 +80,14 @@ jobs:
   guards:
     name: Write-route and tree guards
     runs-on: ubuntu-latest
+    # `.github/settings.yml` states the rollback trigger for this required check
+    # as "the lane exceeds two minutes on a median run". Nothing enforced that:
+    # under `strict: true` a wedged run on a REQUIRED lane blocks every open pull
+    # request for GitHub's 360-minute default, and the stall has to be noticed by
+    # a human watching the merge train. Ten minutes is loose enough that a slow
+    # runner or a cold `uv` cache never trips it — the measured run is 41 s — and
+    # tight enough that a hang costs one lane rather than an afternoon.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
