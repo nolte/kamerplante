@@ -5,6 +5,7 @@ import {
   DashboardDataProvider,
   useDashboardPending,
   usePendingWidget,
+  useWidgetPayload,
 } from '@/components/dashboard/DashboardDataContext';
 
 /**
@@ -133,5 +134,78 @@ describe('the dashboard loading signal', () => {
 
     act(() => screen.getByText('done').click());
     expect(screen.getByTestId('region')).toHaveTextContent('settled');
+  });
+});
+
+
+describe('the page signal and the widget payload flag are separate', () => {
+  afterEach(() => cleanup());
+
+  /**
+   * The first version of #1373 folded both into one field, and `useWidgetPayload`
+   * hands its flag to `GenericWidget` and `PlantGridWidget`. So a single pending
+   * self-fetching widget put every AGGREGATED widget back on its placeholder —
+   * on every default beginner dashboard, because `useSiteWeatherForecast` needs
+   * two sequential round trips while the aggregate returns in well under a
+   * second. `PlantGridWidget` additionally hides its filter toolbar while
+   * loading, so the page lost controls too.
+   *
+   * It shipped nowhere: the pre-merge review measured it. This test is what makes
+   * the separation permanent, because the shortcut is the obvious thing to reach
+   * for the next time someone touches this file.
+   */
+  function Aggregated() {
+    const { payload, loading } = useWidgetPayload('tasks_today');
+    return <span data-testid="agg">{loading ? 'placeholder' : JSON.stringify(payload)}</span>;
+  }
+
+  it('a pending self-fetching widget does not re-skeleton an aggregated one', () => {
+    render(
+      <DashboardDataProvider value={{ payloads: { tasks_today: { n: 1 } }, loading: false }}>
+        <Region />
+        <Aggregated />
+        <Pending widgetKey="weather_forecast" pending />
+      </DashboardDataProvider>,
+    );
+
+    expect(screen.getByTestId('region')).toHaveTextContent('active');
+    expect(screen.getByTestId('agg')).toHaveTextContent('{"n":1}');
+  });
+
+  it('the aggregate flag still reaches the widget', () => {
+    // The control. A separation that simply stopped propagating the aggregate
+    // would break every aggregated placeholder instead.
+    render(
+      <DashboardDataProvider value={{ payloads: {}, loading: true }}>
+        <Aggregated />
+      </DashboardDataProvider>,
+    );
+
+    expect(screen.getByTestId('agg')).toHaveTextContent('placeholder');
+  });
+
+  it('two components registering the same widget key each hold their own slot', () => {
+    // Keyed per hook, not per widget key: one release must not settle the region
+    // while the other is still pending — which is the original defect, reproduced
+    // one level down.
+    function Two() {
+      const [first, setFirst] = useState(true);
+      return (
+        <>
+          <Pending widgetKey="weather_forecast" pending={first} />
+          <Pending widgetKey="weather_forecast" pending />
+          <button onClick={() => setFirst(false)}>first done</button>
+        </>
+      );
+    }
+    render(
+      <DashboardDataProvider value={{ payloads: {}, loading: false }}>
+        <Region />
+        <Two />
+      </DashboardDataProvider>,
+    );
+
+    act(() => screen.getByText('first done').click());
+    expect(screen.getByTestId('region')).toHaveTextContent('active');
   });
 });

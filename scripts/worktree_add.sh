@@ -105,6 +105,14 @@ git worktree add -b "$branch" "$dest" origin/develop
 # `.resume/` is gitignored, so this is a worktree-local working aid and never
 # competes with the branch's real changes for review attention. The
 # `no .resume/ artifacts on the branch` pre-commit hook keeps it that way.
+#
+# The existence check below is a BELT, not a braces: `$dest` is refused above if it
+# already exists and `git worktree add` creates it fresh, so the file cannot be
+# there on this path today. It stays because the cost is one `[ -e ]` and the
+# failure it guards against — overwriting a plan somebody filled in — is the exact
+# thing the plan-before-work gate exists to preserve. An earlier version of this
+# comment claimed the check covered "a worktree re-entered after a crash"; it does
+# not. Re-entry is a `cd`, and never runs this script.
 plan_dir="$dest/.resume/$slug"
 plan_file="$plan_dir/plan.md"
 base_commit="$(git rev-parse --short origin/develop)"

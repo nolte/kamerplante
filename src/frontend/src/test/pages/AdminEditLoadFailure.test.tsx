@@ -94,9 +94,14 @@ describe.each(PAGES)('$name load failure', (page) => {
 
     await renderPage(page);
 
-    await waitFor(() => {
-      expect(screen.queryByText(/nicht gefunden|not found/i)).not.toBeInTheDocument();
-    });
+    // ANCHORED on a positive post-state first. Without it, `queryBy…not.toBeInTheDocument`
+    // is satisfied on `waitFor`'s first synchronous call while `LoadingSkeleton`
+    // is still on screen — measured: reverting both production changes left 12 of
+    // 14 cases red and exactly this one green, for both pages. It was the only
+    // test in the file certifying nothing.
+    await screen.findByTestId('error-retry');
+
+    expect(screen.queryByText(/nicht gefunden|not found/i)).not.toBeInTheDocument();
   });
 
   it.each([403, 500, 429])('shows an error state for %i', async (status) => {

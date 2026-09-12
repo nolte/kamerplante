@@ -86,8 +86,15 @@ export default function AdminEditTenantPage() {
     if (!key) return;
     setLoading(true);
     setLoadError(null);
+    // A per-run flag, because the effect re-runs on `key` and on retry. Before
+    // the `.catch` existed a late rejection from a superseded request was merely
+    // unhandled; now it would call `setLoadError` and swap a healthy, fully
+    // loaded page for an error state belonging to a record the operator has
+    // already navigated away from. Same pattern as `useSiteWeatherForecast`.
+    let cancelled = false;
     fetchAdminTenants()
       .then((tenants) => {
+        if (cancelled) return;
         const found = tenants.find((t) => t.key === key);
         if (found) {
           setTenant(found);
@@ -107,8 +114,16 @@ export default function AdminEditTenantPage() {
       // not mounting the page at all for those callers. It does not touch the
       // rest: a platform admin who hits a 500 or loses the network still read
       // "not found" until this.
-      .catch((err: unknown) => setLoadError(isApiError(err) ? err.statusCode : 0))
-      .finally(() => setLoading(false));
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setLoadError(isApiError(err) ? err.statusCode : 0);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [key, reloadToken]);
 
   // Load members
@@ -210,7 +225,17 @@ export default function AdminEditTenantPage() {
   // only the third of these is genuinely "not found": the list came back and the
   // key was not in it.
   if (loadError !== null) {
-    return <ErrorPage statusCode={loadError === 0 ? 500 : loadError} onRetry={() => setReloadToken((n) => n + 1)} />;
+    // `0` means the failure carried no status at all — a dropped connection, DNS,
+    // a blocked request. Rendering that as 500 tells an offline operator the
+    // server failed, which is a different and wrong diagnosis. 503 is the closest
+    // honest answer: the service could not be reached.
+    return (
+      <ErrorPage
+        statusCode={loadError === 0 ? 503 : loadError}
+        onRetry={() => setReloadToken((n) => n + 1)}
+        landmark={false}
+      />
+    );
   }
   if (!tenant) return <Alert severity="error">{t('pages.admin.tenantNotFound')}</Alert>;
 
