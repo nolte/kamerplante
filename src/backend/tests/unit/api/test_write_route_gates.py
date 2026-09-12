@@ -303,7 +303,25 @@ _NOT_AUTHORISATION: dict[str, str] = {
 #: guard. Deliberately generous: a name caught here and in neither set is a test
 #: failure asking for a one-line decision, which is cheap. A name NOT caught here
 #: is assumed infrastructure, which is the residual risk and why this leans wide.
-_AUTH_SHAPED = ("auth", "admin", "tenant", "user", "principal", "permission", "role", "require_", "key")
+#: Measured at this head: 27 of ~90 distinct names mounted on write routes match.
+#: `mcp` and `bearer` are here because the coverage test below found them
+#: missing: `get_mcp_dispatcher`, `get_mcp_session_store` and `HTTPBearer` were
+#: all classified — somebody had already decided they authorise nobody — and the
+#: filter could not see any of them, so a future sibling would have gone
+#: unreported. A vocabulary the guard cannot read is not a classification.
+_AUTH_SHAPED = (
+    "auth",
+    "admin",
+    "tenant",
+    "user",
+    "principal",
+    "permission",
+    "role",
+    "require_",
+    "key",
+    "mcp",
+    "bearer",
+)
 
 
 #: Write operations that legitimately resolve no authorisation at all. Every entry
@@ -509,7 +527,7 @@ class TestAdminWriteGates:
             assert len(reason) >= 12, f"{route_id} carries no usable reason: {reason!r}"
 
 
-def _stub_operation(path: str, *dependency_names: str, module: str = "app.api.v1.invented.router") -> Operation:
+def _stub_operation(path: str, *dependency_names: str | tuple, module: str = "app.api.v1.invented.router") -> Operation:
     """An Operation whose effective chain is exactly `dependency_names`.
 
     The probes below build a stub `route.dependant` rather than a handler
@@ -524,7 +542,21 @@ def _stub_operation(path: str, *dependency_names: str, module: str = "app.api.v1
         def __init__(self, name: str) -> None:
             self.__qualname__ = name
 
-    subs = [type("Sub", (), {"call": _Call(name), "dependencies": []})() for name in dependency_names]
+    def _sub(spec: str | tuple):
+        """A dependency node. A tuple is `(name, *children)` and nests one level deeper.
+
+        Nesting is not decoration: `_authorisation_chain` descends transitively,
+        and that descent is what this file credits with seeing router-level and
+        parent-router gates. A probe that could only build FLAT chains left it
+        uncontrolled — measured, replacing `walk(sub)` with `pass` left all 88
+        tests green while the chain changed for 428 of 439 real routes.
+        """
+        if isinstance(spec, tuple):
+            name, *children = spec
+            return type("Sub", (), {"call": _Call(name), "dependencies": [_sub(c) for c in children]})()
+        return type("Sub", (), {"call": _Call(spec), "dependencies": []})()
+
+    subs = [_sub(spec) for spec in dependency_names]
 
     class _Route:
         dependant = type("D", (), {"dependencies": subs})()
@@ -577,6 +609,31 @@ class TestTheGuardCanFail:
     def test_an_unauthenticated_route_is_reported_by_the_third_question(self):
         operation = _stub_operation("/api/v1/invented", "get_fertilizer_service")
         assert not _resolves_authorisation(operation)
+
+    def test_a_gate_nested_one_level_down_is_still_found(self):
+        """The transitive descent, controlled.
+
+        `get_active_tenant_context` already has this shape in production: it
+        resolves `get_current_user` beneath itself rather than naming it at the
+        route. A wrapper that pulled `get_current_tenant` one level down would
+        make every route behind it invisible to the tenant sweep, silently, and
+        nothing here noticed until this probe existed.
+        """
+        operation = _stub_operation(
+            "/api/v1/t/{tenant_slug}/invented",
+            ("get_some_wrapper", "get_current_tenant"),
+        )
+        assert "get_current_tenant" in _authorisation_chain(operation)
+        assert _resolves_bare_tenant_context(operation)
+
+    def test_a_role_gate_nested_one_level_down_still_counts(self):
+        """The other direction: nesting must not turn a gated route into an offender."""
+        operation = _stub_operation(
+            "/api/v1/t/{tenant_slug}/invented",
+            "get_current_tenant",
+            ("get_some_wrapper", "require_permission.<locals>._check"),
+        )
+        assert not _resolves_bare_tenant_context(operation)
 
     def test_the_three_predicates_disagree_on_the_same_operation(self):
         """They ask different questions, and a rewrite that collapsed them would show here.
@@ -700,8 +757,9 @@ class TestEveryWriteOperationResolvesSomeAuthorisation:
     def test_the_allowlist_is_small(self):
         """A ceiling, because the cheapest way to make this test green is to grow the list.
 
-        Ten entries today, all of them pre-session endpoints or a published probe.
-        A twelfth is not automatically wrong, but it should cost a conversation.
+        Eleven entries today, all of them pre-session endpoints, a published
+        probe, or a route that authenticates from its own request body. A twelfth
+        is not automatically wrong, but it should cost a conversation.
         """
         assert len(_PUBLIC_ALLOWLIST) <= 12, (
             f"_PUBLIC_ALLOWLIST has grown to {len(_PUBLIC_ALLOWLIST)} entries. "
@@ -815,29 +873,46 @@ class TestTheClassificationItselfCannotDrift:
         for name, reason in _NOT_AUTHORISATION.items():
             assert len(reason) >= 12, f"{name} carries no usable reason: {reason!r}"
 
-    def test_the_shape_filter_matches_a_realistic_share_of_the_live_inventory(self):
-        """Anchored to the app the guard reads, not to two literals.
+    def test_the_shape_filter_matches_every_name_that_was_classified(self):
+        """The real invariant, and it is not a count.
 
-        The first version asserted against the strings `"require_platform_admin"`
-        and `"get_fertilizer_service"`. Narrowing `_AUTH_SHAPED` to `("require_",)`
-        would still match that literal while the guard above quietly stopped
-        scanning most of the inventory — both tests green, the classification
-        vacuous. A floor over the real dependency names cannot be satisfied that
-        way. Measured today: 20 of roughly 90 distinct names match.
+        The guard above can only demand a decision on a name `_AUTH_SHAPED`
+        matches. So the filter must match every name anyone has already decided
+        about — otherwise a classified name falls out of the scan and the next
+        one like it is never reported.
+
+        A count cannot express that. The first version asserted a floor of 12
+        matches; measured, `("user", "tenant", "auth")` matches 14 and passes it
+        while `require_*`, `admin`, `permission`, `role`, `principal` and `key`
+        drop out of the scan entirely — a later `require_new_gate` in neither set
+        would then go unreported, which is precisely the vacuity this is for.
+        Under the rule below that narrowing fails, because `require_platform_admin`
+        is classified, live, and no longer matched.
         """
         seen: set[str] = set()
         for operation in mounted_write_operations():
             seen.update(_authorisation_chain(operation))
 
-        matched = {name for name in seen if any(shape in name.lower() for shape in _AUTH_SHAPED)}
-        assert len(matched) >= 12, (
-            f"_AUTH_SHAPED matches only {len(matched)} of {len(seen)} dependency names mounted on write "
-            "routes. It has been narrowed to the point where the classification guard scans almost "
-            f"nothing: {sorted(matched)}"
+        classified_and_live = (set(_AUTHORISATION) | set(_NOT_AUTHORISATION)) & seen
+        unmatched = sorted(
+            name for name in classified_and_live if not any(shape in name.lower() for shape in _AUTH_SHAPED)
         )
-        assert len(matched) < len(seen), (
-            "_AUTH_SHAPED matches every dependency name, so the classification guard would demand a "
-            "decision on every service and repository in the tree. Too wide is also a failure."
+        assert not unmatched, (
+            "_AUTH_SHAPED no longer matches these names, although they are classified and mounted. "
+            "The classification guard cannot see them, so a future sibling of theirs would go "
+            "unreported:\n  " + "\n  ".join(unmatched)
+        )
+
+    def test_the_shape_filter_does_not_match_everything(self):
+        """Too wide is also a failure: it would demand a decision on every service in the tree."""
+        seen: set[str] = set()
+        for operation in mounted_write_operations():
+            seen.update(_authorisation_chain(operation))
+
+        matched = {name for name in seen if any(shape in name.lower() for shape in _AUTH_SHAPED)}
+        assert len(matched) < len(seen) // 2, (
+            f"_AUTH_SHAPED matches {len(matched)} of {len(seen)} dependency names. At that width the "
+            "guard stops distinguishing authorisation from infrastructure."
         )
 
     def test_every_non_authorisation_entry_is_still_mounted(self):
@@ -845,21 +920,23 @@ class TestTheClassificationItselfCannotDrift:
 
         This file's central argument is that an allowlist without one rots.
         `_NOT_AUTHORISATION` is an allowlist — it says "this name looks like a
-        gate and is not" — and until this test it had no such rule, so an entry
-        for a dependency deleted from the app would have sat there indefinitely,
-        excusing nothing and reading like a decision.
+        gate and is not" — and until this test it had no such rule.
 
-        A generous floor rather than an exact match: some entries are classified
-        against names that appear on READ routes only, and the sweeps walk write
-        routes. What must not happen is the set drifting wholesale out of the
-        tree.
+        **Exact, not a floor.** The first version allowed half the set to be dead,
+        on the grounds that an entry might be classified against a read-only
+        route. Measured: all 18 entries appear on mounted write routes, so that
+        exception carried nothing — while the floor let a name existing nowhere in
+        the app sit here indefinitely, verified by adding one and watching all 88
+        tests stay green. If a future entry really is read-route-only it needs its
+        own exemption with a reason, not a gap wide enough for ten.
         """
         seen: set[str] = set()
         for operation in mounted_write_operations():
             seen.update(_authorisation_chain(operation))
 
-        mounted = {name for name in _NOT_AUTHORISATION if name in seen}
-        assert len(mounted) >= len(_NOT_AUTHORISATION) // 2, (
-            "More than half of _NOT_AUTHORISATION names no longer appear on any mounted write route. "
-            "The set has drifted from the app it describes:\n  " + "\n  ".join(sorted(set(_NOT_AUTHORISATION) - seen))
+        stale = sorted(name for name in _NOT_AUTHORISATION if name not in seen)
+        assert not stale, (
+            "These _NOT_AUTHORISATION names appear on no mounted write route. Either the dependency "
+            "is gone and the entry should go with it, or it moved to a read route and needs a reason "
+            "saying so:\n  " + "\n  ".join(stale)
         )
