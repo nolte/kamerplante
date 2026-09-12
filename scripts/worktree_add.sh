@@ -93,6 +93,83 @@ echo "→ Destination   : $dest"
 git fetch origin develop --quiet
 git worktree add -b "$branch" "$dest" origin/develop
 
+# Seed the plan-before-work stub (#1375).
+#
+# `spec/project/parallel-working-copies/` §"Lifecycle: Plan before work" makes the
+# plan a MUST and the stub a SHOULD for exactly this helper: the gate is
+# convention-driven, no hook aborts work when the plan is absent, so the only
+# thing that makes authoring it the path of least resistance is finding the
+# headings already there. Written once, never overwritten — a worktree re-entered
+# after a crash must find the plan it left, which is the case the gate exists for.
+#
+# `.resume/` is gitignored, so this is a worktree-local working aid and never
+# competes with the branch's real changes for review attention. The
+# `no .resume/ artifacts on the branch` pre-commit hook keeps it that way.
+plan_dir="$dest/.resume/$slug"
+plan_file="$plan_dir/plan.md"
+base_commit="$(git rev-parse --short origin/develop)"
+
+if [ -e "$plan_file" ]; then
+  echo "→ Plan          : $plan_file (exists, left untouched)"
+else
+  mkdir -p "$plan_dir"
+  cat > "$plan_file" <<PLAN
+# Plan: $branch
+
+- **Worktree**: \`$dest\`
+- **Branch**: \`$branch\` (from \`origin/develop\` @ \`$base_commit\`)
+- **Created**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+> Seeded by \`scripts/worktree_add.sh\`. **Fill this in before substantive work
+> begins** — the sections below are the shape
+> \`spec/project/parallel-working-copies/\` §"Lifecycle: Plan before work"
+> prescribes, and an unfilled stub is worth no more than an absent plan.
+
+## Goal
+
+<!-- One paragraph: what is true when this branch is done that is not true now. -->
+
+## Current state, researched
+
+<!-- What the code/spec actually does today, MEASURED rather than assumed.
+     Name the files and the line numbers you read. If an issue states a cause,
+     verify it here before building on it. -->
+
+## Design decision
+
+<!-- The load-bearing choice and why the alternatives lose. -->
+
+### Open questions to confirm before work starts
+
+<!-- Anything whose answer changes the work. Confirm these first; a question
+     answered after the fact is a rewrite. -->
+
+## Work steps, ordered
+
+1.
+
+## Invariants and guardrails
+
+<!-- Carried from CLAUDE.md and the governing specs. What must stay true that
+     this change could quietly break. -->
+
+## Status / resume anchor
+
+<!-- The first unchecked box is where the next session resumes. -->
+
+- [ ] Plan filled in
+- [ ] Work steps drafted
+- [ ] Implementation
+- [ ] Falsification: the guard/test observed RED against the pre-fix state
+- [ ] Full suites green
+- [ ] Pull request opened
+PLAN
+  echo "→ Plan          : $plan_file (stub — fill it in before you start)"
+fi
+
 echo
 echo "✓ Worktree ready. Start a top-level (resumable) session scoped to it with:"
 echo "    cd $dest && claude"
+echo
+echo "  Before substantive work: fill in .resume/$slug/plan.md"
+echo "  (spec/project/parallel-working-copies §Lifecycle: Plan before work)"

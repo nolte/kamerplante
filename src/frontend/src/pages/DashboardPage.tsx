@@ -23,7 +23,7 @@ import LoadingStatus from '@/components/common/LoadingStatus';
 import PageTitle from '@/components/layout/PageTitle';
 import { kamiStateDashboardWelcome } from '@/assets/brand/illustrations';
 import DashboardReadonlyGrid from '@/components/dashboard/DashboardReadonlyGrid';
-import { DashboardDataProvider } from '@/components/dashboard/DashboardDataContext';
+import { DashboardDataProvider, useDashboardPending } from '@/components/dashboard/DashboardDataContext';
 import WidgetConfigDialog from '@/components/dashboard/WidgetConfigDialog';
 import { useAppDispatch, useAppSelector } from '@/store/hooks';
 import { fetchWidgetCatalog, fetchAggregated } from '@/store/slices/dashboardSlice';
@@ -51,6 +51,28 @@ import type { DashboardLayout, DashboardWidgetInstance, WidgetPlacement } from '
 const DashboardEditGrid = lazy(() => import('@/components/dashboard/DashboardEditGrid'));
 
 type Breakpoint = 'lg' | 'md' | 'sm';
+
+/**
+ * The dashboard's single loading announcement, as a child of
+ * `DashboardDataProvider` rather than inline (#1373).
+ *
+ * It has to be a child: a component cannot read a context it renders itself, and
+ * the signal it needs now includes the self-fetching widgets that register
+ * through `usePendingWidget`. Inline, it could only ever see `aggregatedLoading`
+ * — which is exactly the defect, the region going empty while two placeholders
+ * still stand.
+ */
+function DashboardLoadingAnnouncement() {
+  const { t } = useTranslation();
+  const active = useDashboardPending();
+  return (
+    <LoadingStatus
+      active={active}
+      label={t('dashboard.loading.announcement')}
+      data-testid="dashboard-loading-status"
+    />
+  );
+}
 
 export default function DashboardPage() {
   const { t } = useTranslation();
@@ -373,11 +395,7 @@ export default function DashboardPage() {
             self-fetching widget to register into the page-level signal, which is
             a data-layer decision rather than a markup fix.
           */}
-          <LoadingStatus
-            active={aggregatedLoading}
-            label={t('dashboard.loading.announcement')}
-            data-testid="dashboard-loading-status"
-          />
+          <DashboardLoadingAnnouncement />
           {editMode ? (
             <Suspense fallback={<Skeleton variant="rounded" height={400} />}>
               <DashboardEditGrid

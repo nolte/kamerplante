@@ -14,6 +14,7 @@ import CloudIcon from '@mui/icons-material/Cloud';
 import AcUnitIcon from '@mui/icons-material/AcUnit';
 import WeatherProvenanceBadge from '@/components/weather/WeatherProvenanceBadge';
 import { useSiteWeatherForecast } from '@/hooks/useSiteWeatherForecast';
+import { usePendingWidget } from '@/components/dashboard/DashboardDataContext';
 import { formatDate, formatNumber } from '@/utils/formatting';
 
 /** Temperatures render with a fixed single decimal so rows stay visually aligned. */
@@ -32,6 +33,10 @@ const TEMP_FORMAT = { minimumFractionDigits: 1, maximumFractionDigits: 1 };
 export default function WeatherForecastWidget() {
   const { t } = useTranslation();
   const { loading, error, site, forecast, multipleSites, refetch } = useSiteWeatherForecast();
+  // This widget fetches its own data, so the page's aggregate flag never saw it
+  // and the single live region announced "settled" over a standing skeleton
+  // (#1373). Registering here is what makes the page's claim true.
+  usePendingWidget('weather_forecast', loading);
 
   const days = forecast?.forecasts ?? [];
   const frostActive = forecast?.forecast_frost_warning === true;
@@ -54,7 +59,10 @@ export default function WeatherForecastWidget() {
 
   if (loading) {
     return renderShell(
-      <Stack spacing={1} data-testid="weather-widget-loading" sx={{ flexGrow: 1 }}>
+      // `aria-busy` like the aggregated widgets: MUI's `Skeleton` renders an empty
+      // `<span>` with no role and no name, so without this the placeholder is
+      // SILENT in the accessibility tree rather than merely unnamed (#1373).
+      <Stack aria-busy="true" spacing={1} data-testid="weather-widget-loading" sx={{ flexGrow: 1 }}>
         <Skeleton variant="rounded" height={28} />
         <Skeleton variant="rounded" height={28} />
         <Skeleton variant="rounded" height={28} />

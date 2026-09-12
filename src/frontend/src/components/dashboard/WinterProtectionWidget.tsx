@@ -1,3 +1,4 @@
+import { usePendingWidget } from '@/components/dashboard/DashboardDataContext';
 import { useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -116,9 +117,12 @@ export default function WinterProtectionWidget() {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
+  // Self-fetching like the weather widget, and outside the aggregate flag for the
+  // same reason (#1373).
   const { overview, overviewLoading, overviewError } = useAppSelector(
     (s) => s.overwinteringProfiles,
   );
+  usePendingWidget('winter_protection', overviewLoading);
 
   useEffect(() => {
     dispatch(fetchHardinessOverview());
