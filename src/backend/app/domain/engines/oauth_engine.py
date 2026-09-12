@@ -17,6 +17,30 @@ from app.domain.models.oidc_config import OidcProviderConfig
 
 logger = structlog.get_logger()
 
+
+def _as_optional_bool(claim: object) -> bool | None:
+    """Normalise a provider's ``email_verified`` claim to three states (#1403).
+
+    ``None`` means the provider said nothing, which is NOT the same as ``False``
+    and is why this returns an optional rather than defaulting. OIDC Core 5.1
+    specifies a boolean, but the claim is optional and real deployments send the
+    strings ``"true"`` / ``"false"`` often enough that reading only ``bool``
+    would turn a provider that *does* assert verification into one that appears
+    silent — and under the rule in :meth:`OAuthEngine.should_auto_link` silence
+    refuses the link, so that error is user-visible rather than merely untidy.
+
+    Anything else — a number, a list, a typo — is ``None``. Guessing at a
+    malformed claim is exactly the kind of leniency this issue exists to remove.
+    """
+    if isinstance(claim, bool):
+        return claim
+    if isinstance(claim, str):
+        lowered = claim.strip().lower()
+        if lowered in {"true", "false"}:
+            return lowered == "true"
+    return None
+
+
 # Well-known endpoints for built-in providers
 _PROVIDER_ENDPOINTS: dict[str, dict[str, str]] = {
     "google": {
@@ -147,12 +171,37 @@ class OAuthEngine:
 
             # Get primary email (may be private)
             email = profile.get("email")
-            if not email:
+
+            # `/user` carries NO verification flag — GitHub keeps it on
+            # `/user/emails`, one entry per address with its own `verified`
+            # boolean (#1403). So the address list is fetched unconditionally
+            # now, not only when the profile email is private: without it the
+            # claim would be `None` for every GitHub caller whose email is
+            # public, which under the "absent means unverified" rule would
+            # switch auto-linking off for most of them. The information exists
+            # and the token already grants it.
+            #
+            # A failure here must not break sign-in: an account that is ALREADY
+            # linked logs in without ever reaching the auto-link branch, and the
+            # branch that does reach it degrades to "not verified", which is the
+            # safe direction. So this is caught rather than raised.
+            verified: bool | None = None
+            try:
                 email_resp = client.get("https://api.github.com/user/emails", headers=headers)
                 email_resp.raise_for_status()
                 emails = email_resp.json()
-                primary = next((e for e in emails if e.get("primary")), None)
-                email = primary["email"] if primary else emails[0]["email"]
+                if not email:
+                    primary = next((e for e in emails if e.get("primary")), None)
+                    chosen = primary if primary else (emails[0] if emails else None)
+                    if chosen is not None:
+                        email = chosen["email"]
+                        verified = bool(chosen.get("verified", False))
+                else:
+                    match = next((e for e in emails if e.get("email") == email), None)
+                    if match is not None:
+                        verified = bool(match.get("verified", False))
+            except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+                logger.warning("github_email_verification_unavailable", error=str(exc))
 
         return OAuthUserInfo(
             provider=AuthProviderType.GITHUB,
@@ -160,6 +209,7 @@ class OAuthEngine:
             email=email,
             display_name=profile.get("name") or profile.get("login", ""),
             avatar_url=profile.get("avatar_url"),
+            email_verified=verified,
         )
 
     def _extract_apple_user_info(self, token_response: dict) -> OAuthUserInfo:
@@ -184,6 +234,10 @@ class OAuthEngine:
             email=data.get("email", ""),
             display_name=data.get("name", data.get("preferred_username", "")),
             avatar_url=data.get("picture"),
+            # OIDC Core 5.1: a standard boolean claim, and genuinely optional —
+            # `None` when the provider omits it, which is a different answer from
+            # `False` and is treated as one (#1403).
+            email_verified=_as_optional_bool(data.get("email_verified")),
         )
 
     def _extract_from_id_token(self, token_response: dict, provider_type: str) -> OAuthUserInfo:
@@ -208,6 +262,7 @@ class OAuthEngine:
             email=claims.get("email", ""),
             display_name=claims.get("name", claims.get("email", "")),
             avatar_url=claims.get("picture"),
+            email_verified=_as_optional_bool(claims.get("email_verified")),
         )
 
     def fetch_discovery_document(self, issuer_url: str) -> dict:
@@ -218,9 +273,33 @@ class OAuthEngine:
             resp.raise_for_status()
             return resp.json()
 
-    def should_auto_link(self, existing_email_verified: bool, oauth_email_verified: bool) -> bool:
-        """Auto-link if both the existing account and the OAuth email are verified."""
-        return existing_email_verified and oauth_email_verified
+    def should_auto_link(self, existing_email_verified: bool, oauth_email_verified: bool | None) -> bool:
+        """Auto-link only if BOTH sides are verified, with absent counting as unverified.
+
+        Auto-linking hands an OAuth assertion control of an existing local
+        account purely because the two addresses match. The provider's
+        ``email_verified`` claim is what bounds that: without it, any provider
+        that will assert ``email = victim@example.org`` — one misconfigured in
+        good faith, one that never verifies addresses, or one that is
+        compromised — can log in as the victim, provided the victim's local
+        account is email-verified, which every normally-registered account is.
+
+        **Until #1403 the second argument was a literal ``True`` at the call
+        site.** The parameter existed, its docstring said "both", and the value
+        it guarded was hard-coded to the permissive answer, so the predicate
+        reduced to a fact about the *victim's* account rather than about the
+        assertion being trusted. NFR-018 §1 in its purest form: a check that
+        cannot fail.
+
+        **``None`` refuses**, and that is a decision rather than a default
+        (operator, 2026-09-11). Many providers omit the claim; treating absence
+        as ``True`` reproduces exactly the hole above, so absence is treated as
+        "not asserted" and the caller is sent down the "log in with your
+        password, then link" path that already exists. It is a behaviour change
+        for any installation whose provider is silent, which is why it is
+        written here and not only in the issue.
+        """
+        return existing_email_verified and oauth_email_verified is True
 
     @staticmethod
     def validate_state(state: str, expected: str) -> bool:

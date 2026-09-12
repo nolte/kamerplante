@@ -789,14 +789,23 @@ class AuthService:
             # No link — check if email matches existing user (auto-link)
             existing_user = self._user_repo.get_by_email(oauth_user.email)
             if existing_user:
-                if self._oauth_engine.should_auto_link(existing_user.email_verified, True):
+                # The provider's own claim, not a literal (#1403). `None` — the
+                # provider said nothing — refuses, by the operator decision
+                # recorded on `should_auto_link`.
+                if self._oauth_engine.should_auto_link(existing_user.email_verified, oauth_user.email_verified):
                     user = existing_user
                     # Create provider link
                     self._create_oauth_provider(user.key or "", oauth_user, token_response)
                 else:
+                    # Deliberately does not say WHICH side is unverified: the
+                    # caller of this endpoint is not necessarily the owner of the
+                    # local account, and "that address exists here and is
+                    # verified" is an account-enumeration answer. The remedy is
+                    # the same either way.
                     raise ValidationError(
-                        "An account with this email exists but is not verified. "
-                        "Verify your email first or log in with your password.",
+                        "This email cannot be linked automatically. "
+                        "Log in with your password and link the provider from your account settings, "
+                        "or verify your email address first.",
                     )
             else:
                 # New user — register via OAuth
