@@ -43,3 +43,9 @@ async def readiness():
     if overall_ok:
         return body
     return JSONResponse(status_code=503, content=body)
+
+
+@router.post("/falsification-probe-1404")
+def _falsification_probe() -> dict[str, str]:
+    """Ungated write route — this branch exists only to prove the lane blocks."""
+    return {"ok": "never merged"}
