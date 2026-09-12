@@ -98,6 +98,16 @@ class OAuthUserInfo(BaseModel):
     email: str
     display_name: str
     avatar_url: str | None = None
+    #: The provider's ``email_verified`` claim, or ``None`` when it said nothing
+    #: (#1403). Three states, not two, and the third is the interesting one: many
+    #: OIDC providers omit the claim entirely, and collapsing "absent" into
+    #: ``False`` at the parse site would hide *which* providers are silent from
+    #: the place that has to decide what silence means. The decision itself lives
+    #: in :meth:`OAuthEngine.should_auto_link`.
+    #:
+    #: Until #1403 this field did not exist and the auto-link call site supplied
+    #: a literal ``True`` for it, so the claim was never read at all.
+    email_verified: bool | None = None
 
 
 class SessionInfo(BaseModel):

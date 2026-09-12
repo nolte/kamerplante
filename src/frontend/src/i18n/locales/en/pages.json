@@ -853,7 +853,8 @@
         "providerError": "The provider reported an error. Please try again later.",
         "accountDisabled": "This account is disabled.",
         "sessionFailed": "Sign-in could not be completed. Please sign in again.",
-        "generic": "An error occurred during sign-in."
+        "generic": "An error occurred during sign-in.",
+        "linkRequiresPassword": "This email address already belongs to an account here, and it cannot be linked automatically. Sign in with your email and password instead."
       },
       "profileSection": "Personal Details",
       "profileSectionDesc": "Display name and email address of your account.",
